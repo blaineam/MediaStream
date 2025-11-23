@@ -64,6 +64,7 @@ public struct MediaGalleryGridView: View {
     let filterConfig: MediaGalleryFilterConfig
     let multiSelectActions: [MediaGalleryMultiSelectAction]
     let includeBuiltInShareAction: Bool
+    let initialScrollIndex: Int?
     let onSelect: (Int) -> Void
     let onDismiss: () -> Void
 
@@ -85,6 +86,7 @@ public struct MediaGalleryGridView: View {
         filterConfig: MediaGalleryFilterConfig = MediaGalleryFilterConfig(),
         multiSelectActions: [MediaGalleryMultiSelectAction] = [],
         includeBuiltInShareAction: Bool = true,
+        initialScrollIndex: Int? = nil,
         onSelect: @escaping (Int) -> Void,
         onDismiss: @escaping () -> Void
     ) {
@@ -93,6 +95,7 @@ public struct MediaGalleryGridView: View {
         self.filterConfig = filterConfig
         self.multiSelectActions = multiSelectActions
         self.includeBuiltInShareAction = includeBuiltInShareAction
+        self.initialScrollIndex = initialScrollIndex
         self.onSelect = onSelect
         self.onDismiss = onDismiss
     }
@@ -108,58 +111,64 @@ public struct MediaGalleryGridView: View {
     public var body: some View {
         ZStack {
             // Main scrollable content
-            ScrollView {
-                LazyVGrid(columns: gridColumns, spacing: 16) {
-                    ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
-                        MediaThumbnailView(
-                            mediaItem: item,
-                            thumbnail: thumbnails[item.id],
-                            videoDuration: videoDurations[item.id],
-                            videoHasAudio: videoHasAudio[item.id],
-                            isSelected: selectedItems.contains(item.id),
-                            showSelection: isMultiSelectMode
-                        )
-                        .onTapGesture {
-                            handleItemTap(item: item, index: index)
-                        }
-                        .contextMenu {
-                            Button(action: {
-                                let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
-                                onSelect(originalIndex)
-                            }) {
-                                Label("View", systemImage: "eye")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: gridColumns, spacing: 16) {
+                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                            MediaThumbnailView(
+                                mediaItem: item,
+                                thumbnail: thumbnails[item.id],
+                                videoDuration: videoDurations[item.id],
+                                videoHasAudio: videoHasAudio[item.id],
+                                isSelected: selectedItems.contains(item.id),
+                                showSelection: isMultiSelectMode
+                            )
+                            .id(item.id)
+                            .onTapGesture {
+                                handleItemTap(item: item, index: index)
                             }
-
-                            Button(action: {
-                                Task {
-                                    await shareItem(item)
+                            .contextMenu {
+                                Button(action: {
+                                    let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
+                                    onSelect(originalIndex)
+                                }) {
+                                    Label("View", systemImage: "eye")
                                 }
-                            }) {
-                                Label("Share", systemImage: "square.and.arrow.up")
-                            }
 
-                            // Add custom actions from configuration
-                            if !configuration.customActions.isEmpty {
-                                Divider()
-                                ForEach(configuration.customActions) { action in
-                                    Button(action: {
-                                        let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
-                                        action.action(originalIndex)
-                                    }) {
-                                        Label(action.icon, systemImage: action.icon)
+                                Button(action: {
+                                    Task {
+                                        await shareItem(item)
+                                    }
+                                }) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+
+                                // Add custom actions from configuration
+                                if !configuration.customActions.isEmpty {
+                                    Divider()
+                                    ForEach(configuration.customActions) { action in
+                                        Button(action: {
+                                            let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
+                                            action.action(originalIndex)
+                                        }) {
+                                            Label(action.icon, systemImage: action.icon)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    .padding(16)
+                    #if os(iOS)
+                    .padding(.top, (!isMultiSelectMode && hasMultipleMediaTypes) ? 50 : 0) // Make room for filter bar only when shown
+                    #else
+                    .padding(.top, 46) // Extra padding on top to separate from select overlay on macOS
+                    #endif
+                    .padding(.bottom, (isMultiSelectMode && !selectedItems.isEmpty) ? 70 : 0) // Make room for toolbar
                 }
-                .padding(16)
-                #if os(iOS)
-                .padding(.top, (!isMultiSelectMode && hasMultipleMediaTypes) ? 50 : 0) // Make room for filter bar only when shown
-                #else
-                .padding(.top, 46) // Extra padding on top to separate from select overlay on macOS
-                #endif
-                .padding(.bottom, (isMultiSelectMode && !selectedItems.isEmpty) ? 70 : 0) // Make room for toolbar
+                .onAppear {
+                    scrollToInitialIndex(proxy: proxy)
+                }
             }
 
             // Overlay glass UI elements
@@ -582,6 +591,23 @@ public struct MediaGalleryGridView: View {
                         videoHasAudio[item.id] = hasAudio
                     }
                 }
+            }
+        }
+    }
+
+    private func scrollToInitialIndex(proxy: ScrollViewProxy) {
+        guard let initialIndex = initialScrollIndex,
+              initialIndex >= 0 && initialIndex < mediaItems.count else {
+            return
+        }
+
+        let targetItem = mediaItems[initialIndex]
+        print("📸 MediaGalleryGridView: Scrolling to initial index \(initialIndex) with item id \(targetItem.id)")
+
+        // Delay slightly to allow LazyVGrid to render
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            withAnimation {
+                proxy.scrollTo(targetItem.id, anchor: .center)
             }
         }
     }

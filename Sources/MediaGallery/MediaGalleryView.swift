@@ -113,22 +113,22 @@ public struct MediaGalleryView: View {
                     .opacity(currentIndex == index ? 1 : 0)
                     .zIndex(currentIndex == index ? 1 : 0)
                     .allowsHitTesting(currentIndex == index)
-                    .if(!isZoomed) { view in
-                        view.highPriorityGesture(
-                            // High priority swipe gesture for navigation when not zoomed
-                            // This takes precedence over child pan gestures
-                            DragGesture(minimumDistance: 50)
-                                .onEnded { value in
-                                    if abs(value.translation.width) > abs(value.translation.height) {
-                                        if value.translation.width < 0 {
-                                            nextItem()
-                                        } else {
-                                            previousItem()
-                                        }
+                    .highPriorityGesture(
+                        // High priority swipe gesture for navigation when not zoomed
+                        // Only responds when not zoomed - doesn't recreate view when zoom state changes
+                        DragGesture(minimumDistance: 50)
+                            .onEnded { value in
+                                // Only navigate if not zoomed
+                                guard !isZoomed else { return }
+                                if abs(value.translation.width) > abs(value.translation.height) {
+                                    if value.translation.width < 0 {
+                                        nextItem()
+                                    } else {
+                                        previousItem()
                                     }
                                 }
-                        )
-                    }
+                            }
+                    )
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: currentIndex)

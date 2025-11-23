@@ -555,7 +555,7 @@ struct ZoomableMediaView: View {
     @State private var videoPlayer: AVPlayer?
     @State private var savedVideoPosition: Double = 0.0
     @State private var videoWasAtEnd: Bool = false
-    @State private var lastDoubleTapTime: Date = .distantPast  // Track last double tap for debouncing
+    @State private var hasLoadedMedia: Bool = false  // Track if media has been loaded
 
     private let minScale: CGFloat = 1.0
     private let maxScale: CGFloat = 4.0
@@ -633,7 +633,7 @@ struct ZoomableMediaView: View {
 
     private func loadMedia() async {
         // Don't reload if already loaded
-        if image != nil || videoURL != nil {
+        if hasLoadedMedia || image != nil || videoURL != nil {
             return
         }
 
@@ -655,6 +655,7 @@ struct ZoomableMediaView: View {
             case .image, .animatedImage:
                 if let loadedImage = await mediaItem.loadImage() {
                     image = loadedImage
+                    hasLoadedMedia = true
                 } else {
                     print("⚠️ Failed to load image for media item: \(mediaItem.id)")
                 }
@@ -667,6 +668,7 @@ struct ZoomableMediaView: View {
                     }
 
                     videoURL = url
+                    hasLoadedMedia = true
                     await MainActor.run {
                         videoPlayer = AVPlayer(url: url)
                         print("✅ Created AVPlayer for video: \(url.lastPathComponent)")
@@ -726,17 +728,9 @@ struct ZoomableMediaView: View {
     }
 
     private func handleDoubleTap(in geometry: GeometryProxy) {
-        // Debounce rapid taps (ignore if less than 0.15 seconds since last tap)
-        let now = Date()
-        if now.timeIntervalSince(lastDoubleTapTime) < 0.15 {
-            print("🚫 Ignoring rapid double tap")
-            return
-        }
-        lastDoubleTapTime = now
-
         print("👆 Double tap - current scale: \(scale), minScale: \(minScale)")
 
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
             // Use a threshold to detect if we're zoomed in (account for floating point precision)
             if scale > minScale + 0.01 {
                 // Zoom out
