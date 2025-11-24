@@ -56,6 +56,7 @@ public struct MediaGalleryView: View {
     let configuration: MediaGalleryConfiguration
     let onDismiss: () -> Void
     let onBackToGrid: (() -> Void)?
+    let onIndexChange: ((Int) -> Void)?
 
     @State private var currentIndex: Int
     @State private var isSlideshowPlaying = false
@@ -80,13 +81,15 @@ public struct MediaGalleryView: View {
         initialIndex: Int = 0,
         configuration: MediaGalleryConfiguration = MediaGalleryConfiguration(),
         onDismiss: @escaping () -> Void,
-        onBackToGrid: (() -> Void)? = nil
+        onBackToGrid: (() -> Void)? = nil,
+        onIndexChange: ((Int) -> Void)? = nil
     ) {
         self.mediaItems = mediaItems
         self.initialIndex = min(max(0, initialIndex), mediaItems.count - 1)
         self.configuration = configuration
         self.onDismiss = onDismiss
         self.onBackToGrid = onBackToGrid
+        self.onIndexChange = onIndexChange
         _currentIndex = State(initialValue: min(max(0, initialIndex), mediaItems.count - 1))
     }
 
@@ -678,6 +681,9 @@ public struct MediaGalleryView: View {
             currentIndex = newIndex
         }
 
+        // Notify parent of index change
+        onIndexChange?(currentIndex)
+
         if isSlideshowPlaying {
             let nextItem = mediaItems[currentIndex]
             // Schedule timer for images and animated images
@@ -702,6 +708,9 @@ public struct MediaGalleryView: View {
             currentIndex = newIndex
         }
 
+        // Notify parent of index change
+        onIndexChange?(currentIndex)
+
         if isSlideshowPlaying {
             let nextItem = mediaItems[currentIndex]
             // Schedule timer for images and animated images
@@ -724,6 +733,9 @@ public struct MediaGalleryView: View {
         withAnimation(.easeInOut(duration: 0.3)) {
             currentIndex = newIndex
         }
+
+        // Notify parent of index change
+        onIndexChange?(currentIndex)
 
         if isSlideshowPlaying {
             let prevItem = mediaItems[currentIndex]
