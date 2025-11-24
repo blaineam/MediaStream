@@ -30,6 +30,7 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
 - Smart pause when zoomed in
 - Automatic resume when zoomed out
 - Duration detection for animated images
+- **Auto-disable idle timer** (iOS): Prevents device from sleeping during slideshow playback
 
 ### 📱 Media Type Support
 - **Static Images**: JPEG, PNG, HEIC, etc.

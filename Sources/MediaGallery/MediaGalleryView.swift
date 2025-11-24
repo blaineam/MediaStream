@@ -296,6 +296,11 @@ public struct MediaGalleryView: View {
         .onDisappear {
             stopSlideshow()
             cancelHideControls()
+
+            // Ensure idle timer is re-enabled when gallery is dismissed
+            #if os(iOS)
+            UIApplication.shared.isIdleTimerDisabled = false
+            #endif
         }
         #if os(iOS)
         .onKeyPress(.space) {
@@ -589,6 +594,11 @@ public struct MediaGalleryView: View {
         guard !isZoomed else { return }
         isSlideshowPlaying = true
 
+        // Disable idle timer to prevent device from sleeping during slideshow
+        #if os(iOS)
+        UIApplication.shared.isIdleTimerDisabled = true
+        #endif
+
         // Auto-hide controls when slideshow starts
         withAnimation(.easeOut(duration: 0.3)) {
             showControls = false
@@ -620,6 +630,11 @@ public struct MediaGalleryView: View {
         pauseSlideshow()
         videoSlideStartTime = nil
         videoLoopCount = 0
+
+        // Re-enable idle timer when slideshow stops
+        #if os(iOS)
+        UIApplication.shared.isIdleTimerDisabled = false
+        #endif
     }
 
     private func scheduleSlideshowTimer() async {
