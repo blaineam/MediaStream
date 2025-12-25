@@ -34,31 +34,39 @@ jobs:
   build-and-test:
     name: Build and Test
     needs: validate
-    runs-on: macos-14
-    strategy:
-      matrix:
-        destination:
-          - platform=iOS Simulator,name=iPhone 15,OS=17.2
-          - platform=macOS
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build
+      - name: Swift Build
+        run: swift build
+
+      - name: Swift Test
+        run: swift test
+
+      - name: Xcode Build (macOS)
         run: |
-          set -o pipefail
           xcodebuild build \
             -scheme MediaStream \
-            -destination "${{ matrix.destination }}" \
+            -destination "platform=macOS" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 
-      - name: Run Tests
+      - name: Xcode Build (iOS)
         run: |
-          set -o pipefail
+          xcodebuild build \
+            -scheme MediaStream \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Xcode Test (macOS)
+        run: |
           xcodebuild test \
             -scheme MediaStream \
-            -destination "${{ matrix.destination }}" \
+            -destination "platform=macOS" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 
@@ -82,18 +90,14 @@ jobs:
       - name: Generate Release Notes
         id: release_notes
         run: |
-          # Get the previous tag
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
           if [ -z "$PREV_TAG" ]; then
-            echo "First release - no previous tag found"
             COMMITS=$(git log --oneline --no-decorate)
           else
-            echo "Previous tag: $PREV_TAG"
             COMMITS=$(git log ${PREV_TAG}..HEAD --oneline --no-decorate)
           fi
 
-          # Create release notes
           {
             echo "notes<<EOF"
             echo "## What's Changed"

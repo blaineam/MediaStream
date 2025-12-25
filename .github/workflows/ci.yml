@@ -11,45 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build and Test
-    runs-on: macos-14
-    strategy:
-      matrix:
-        destination:
-          - platform=iOS Simulator,name=iPhone 15,OS=17.2
-          - platform=macOS
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Show Xcode Version
-        run: xcodebuild -version
-
-      - name: Show Available Simulators
-        run: xcrun simctl list devices available | head -30
-
-      - name: Build
-        run: |
-          set -o pipefail
-          xcodebuild build \
-            -scheme MediaStream \
-            -destination "${{ matrix.destination }}" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
-
-      - name: Run Tests
-        run: |
-          set -o pipefail
-          xcodebuild test \
-            -scheme MediaStream \
-            -destination "${{ matrix.destination }}" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
-
   swift-build:
-    name: Swift Build
-    runs-on: macos-14
+    name: Swift Build and Test
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,9 +27,51 @@ jobs:
       - name: Run Package Tests
         run: swift test
 
+  xcode-build:
+    name: Xcode Build
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - destination: "platform=macOS"
+            name: "macOS"
+          - destination: "generic/platform=iOS"
+            name: "iOS"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode Version
+        run: xcodebuild -version
+
+      - name: Build for ${{ matrix.name }}
+        run: |
+          xcodebuild build \
+            -scheme MediaStream \
+            -destination "${{ matrix.destination }}" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+  xcode-test:
+    name: Xcode Test (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Tests on macOS
+        run: |
+          xcodebuild test \
+            -scheme MediaStream \
+            -destination "platform=macOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
   lint:
     name: SwiftLint
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
