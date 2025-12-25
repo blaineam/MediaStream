@@ -158,7 +158,7 @@ struct CustomVideoPlayerView: View {
                     wasAtEnd = false
 
                     // Simple seek to beginning
-                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                         Task { @MainActor in
                             self.player.play()
                             self.isPlaying = true
@@ -180,7 +180,7 @@ struct CustomVideoPlayerView: View {
             if newValue > oldValue && shouldAutoplay {
                 print("📹 Loop count increased to \(newValue) - restarting video")
                 // Reset and play from beginning
-                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                     Task { @MainActor in
                         self.currentTime = 0.0
                         self.savedPosition = 0.0
@@ -208,7 +208,7 @@ struct CustomVideoPlayerView: View {
                     wasAtEnd = false
 
                     // Simple seek to beginning
-                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                         Task { @MainActor in
                             if self.shouldAutoplay {
                                 self.player.play()
