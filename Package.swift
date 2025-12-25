@@ -4,7 +4,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "MediaGallery",
+    name: "MediaStream",
     platforms: [
         .iOS(.v17),
         .macOS(.v14)
@@ -12,19 +12,19 @@ let package = Package(
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
-            name: "MediaGallery",
-            targets: ["MediaGallery"]
+            name: "MediaStream",
+            targets: ["MediaStream"]
         ),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "MediaGallery"
+            name: "MediaStream"
         ),
         .testTarget(
-            name: "MediaGalleryTests",
-            dependencies: ["MediaGallery"]
+            name: "MediaStreamTests",
+            dependencies: ["MediaStream"]
         ),
     ]
 )
