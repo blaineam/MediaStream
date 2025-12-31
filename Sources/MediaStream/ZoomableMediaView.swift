@@ -958,7 +958,13 @@ struct ZoomableMediaView: View {
                     useStreaming = true
                     hasLoadedMedia = true
                 } else {
-                    if let loadedImage = await mediaItem.loadImage() {
+                    // Use AnimatedImageHelper to properly load all frames (loadImage might only get first frame)
+                    if let animatedImage = AnimatedImageHelper.createAnimatedImage(from: url) {
+                        print("ZoomableMediaView: Loaded animated image with \(animatedImage.images?.count ?? 1) frames")
+                        image = animatedImage
+                        hasLoadedMedia = true
+                    } else if let loadedImage = await mediaItem.loadImage() {
+                        // Fallback to loadImage if AnimatedImageHelper fails
                         image = loadedImage
                         hasLoadedMedia = true
                     }
@@ -989,14 +995,12 @@ struct ZoomableMediaView: View {
                 // No URL or Data available - fall back to loadImage()
                 // This may OOM for large GIFs, but it's the app's responsibility to provide URL/Data
                 if let loadedImage = await mediaItem.loadImage() {
-                    // Check if it's too large and show warning
+                    // Log warning for large GIFs but still animate them
+                    // (memory is already allocated at this point - stripping frames doesn't help)
                     if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
-                        print("ZoomableMediaView: ⚠️ Large GIF (\(frames.count) frames) - implement loadAnimatedImageURL() or loadAnimatedImageData() to avoid OOM")
-                        // Show first frame only to reduce ongoing memory pressure
-                        image = frames.first ?? loadedImage
-                    } else {
-                        image = loadedImage
+                        print("ZoomableMediaView: ⚠️ Large GIF (\(frames.count) frames) - implement loadAnimatedImageURL() or loadAnimatedImageData() for better memory efficiency")
                     }
+                    image = loadedImage
                     hasLoadedMedia = true
                 }
             }

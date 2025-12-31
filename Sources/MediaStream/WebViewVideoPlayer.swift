@@ -236,6 +236,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
     /// Custom URL scheme handler for remote videos
     private var schemeHandler: VideoPlayerSchemeHandler?
 
+    /// Flag indicating user needs to tap video to enable audio (iOS autoplay restriction)
+    @Published public var needsUserGestureForAudio: Bool = false
+
     /// Background color for the player (matches parent view)
     public var backgroundColor: PlatformColor = .black {
         didSet {
@@ -540,6 +543,51 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     }
                 });
 
+                // Track if user has interacted with audio (required for iOS unmute)
+                var hasUserAudioGesture = false;
+                var pendingUnmute = false;
+                var pendingVolume = 1.0;
+
+                // Click on video enables audio (establishes user gesture context)
+                video.addEventListener('click', (e) => {
+                    console.log('Video CLICKED - enabling audio context');
+                    const wasWaitingForGesture = !hasUserAudioGesture;
+                    hasUserAudioGesture = true;
+                    // Apply any pending unmute
+                    if (pendingUnmute) {
+                        video.muted = false;
+                        video.volume = pendingVolume;
+                        console.log('Applied pending unmute, volume:', pendingVolume, 'muted now:', video.muted);
+                        pendingUnmute = false;
+                        // Notify Swift that audio is now enabled
+                        window.webkit.messageHandlers.videoState.postMessage({ audioEnabled: true });
+                    }
+                    // Toggle play/pause on click (only if we weren't just enabling audio)
+                    if (!wasWaitingForGesture || !pendingUnmute) {
+                        if (video.paused) {
+                            video.play();
+                        } else {
+                            video.pause();
+                        }
+                    }
+                });
+
+                // Also enable on touchstart for iOS
+                video.addEventListener('touchstart', (e) => {
+                    if (!hasUserAudioGesture) {
+                        console.log('Video TOUCHED - enabling audio context');
+                        hasUserAudioGesture = true;
+                        if (pendingUnmute) {
+                            video.muted = false;
+                            video.volume = pendingVolume;
+                            console.log('Applied pending unmute on touch, volume:', pendingVolume, 'muted now:', video.muted);
+                            pendingUnmute = false;
+                            // Notify Swift that audio is now enabled
+                            window.webkit.messageHandlers.videoState.postMessage({ audioEnabled: true });
+                        }
+                    }
+                }, { passive: true });
+
                 // Exposed functions for Swift to call
                 window.videoPlay = () => {
                     console.log('videoPlay called, paused: ' + video.paused + ', readyState: ' + video.readyState + ', muted: ' + video.muted);
@@ -561,12 +609,28 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 };
                 window.videoSeek = (time) => { video.currentTime = time; };
                 window.videoSetVolume = (vol) => {
-                    console.log('Setting volume to:', vol);
-                    video.volume = Math.max(0, Math.min(1, vol));
+                    console.log('Setting volume to:', vol, 'hasUserGesture:', hasUserAudioGesture);
+                    pendingVolume = Math.max(0, Math.min(1, vol));
+                    video.volume = pendingVolume;
+                    console.log('Volume after set:', video.volume, 'muted:', video.muted);
                 };
                 window.videoSetMuted = (muted) => {
-                    console.log('Setting muted to:', muted);
-                    video.muted = muted;
+                    console.log('Setting muted to:', muted, 'was:', video.muted, 'hasUserGesture:', hasUserAudioGesture);
+                    if (!muted && !hasUserAudioGesture) {
+                        // Queue the unmute for when user taps the video
+                        console.log('Queuing unmute - waiting for user gesture (tap video to enable audio)');
+                        pendingUnmute = true;
+                        window.webkit.messageHandlers.videoState.postMessage({ needsUserGesture: true });
+                    } else {
+                        video.muted = muted;
+                        console.log('Muted after set:', video.muted);
+                        // If iOS silently ignored unmute, report it
+                        if (!muted && video.muted) {
+                            console.log('WARNING: iOS rejected unmute request');
+                            pendingUnmute = true;
+                            window.webkit.messageHandlers.videoState.postMessage({ needsUserGesture: true });
+                        }
+                    }
                 };
                 window.videoGetState = () => ({
                     currentTime: video.currentTime,
@@ -1219,6 +1283,14 @@ extension WebViewVideoController: WKScriptMessageHandler {
                     if let playing = body["playing"] as? Bool {
                         self.isPlaying = playing
                     }
+                    if let needsGesture = body["needsUserGesture"] as? Bool, needsGesture {
+                        self.needsUserGestureForAudio = true
+                        print("WebViewVideoPlayer: Audio requires user gesture - tap video to enable")
+                    }
+                    if let audioEnabled = body["audioEnabled"] as? Bool, audioEnabled {
+                        self.needsUserGestureForAudio = false
+                        print("WebViewVideoPlayer: Audio enabled after user gesture")
+                    }
                 }
 
             default:
@@ -1371,9 +1443,28 @@ public struct CustomWebViewVideoPlayerView: View {
 
     public var body: some View {
         ZStack {
-            // Video layer
+            // Video layer - allow hit testing when we need user gesture for audio
             WebViewVideoRepresentable(controller: controller)
-                .allowsHitTesting(false)
+                .allowsHitTesting(controller.needsUserGestureForAudio)
+
+            // Audio gesture overlay - shown when user needs to tap to enable audio
+            if controller.needsUserGestureForAudio {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Image(systemName: "speaker.slash.fill")
+                            .foregroundColor(.white)
+                        Text("Tap video to enable audio")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.bottom, 60) // Above controls
+                }
+                .allowsHitTesting(false) // Let taps pass through to video
+            }
 
             // Controls overlay
             if showControls {
@@ -1448,10 +1539,14 @@ public struct CustomWebViewVideoPlayerView: View {
                             if showVolumeSlider {
                                 Slider(value: $volume, in: 0...1) { editing in
                                     hasUserAudioInteraction = true
-                                    controller.setVolume(Float(volume))
-                                    if volume > 0 && isMuted {
-                                        isMuted = false
-                                        controller.setMuted(false)
+                                    // Always unmute when interacting with volume slider
+                                    if !editing {
+                                        // On release, set final volume
+                                        controller.setVolume(Float(volume))
+                                        if volume > 0 {
+                                            isMuted = false
+                                            controller.setMuted(false)
+                                        }
                                     }
                                     resetVolumeCollapseTimer()
                                 }
@@ -1459,10 +1554,11 @@ public struct CustomWebViewVideoPlayerView: View {
                                 .tint(.white)
                                 .onChange(of: volume) { _, newValue in
                                     hasUserAudioInteraction = true
+                                    // Unmute and set volume on every change
+                                    controller.setMuted(false)
                                     controller.setVolume(Float(newValue))
-                                    if newValue > 0 && isMuted {
+                                    if newValue > 0 {
                                         isMuted = false
-                                        controller.setMuted(false)
                                     }
                                     resetVolumeCollapseTimer()
                                 }
@@ -1477,8 +1573,14 @@ public struct CustomWebViewVideoPlayerView: View {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         showVolumeSlider = true
                                     }
+                                    // Always sync volume and muted state when slider is shown
+                                    // Video starts muted in HTML, so we must explicitly unmute
                                     controller.setVolume(Float(volume))
                                     controller.setMuted(isMuted)
+                                    // If not muted in our state, unmute the video too
+                                    if !isMuted {
+                                        controller.setMuted(false)
+                                    }
                                 }
                                 resetVolumeCollapseTimer()
                             }) {
