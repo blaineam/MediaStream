@@ -59,6 +59,13 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
 - **Memory Pressure Handling**: Automatically evicts cache entries when iOS sends memory warnings
 - **Lazy Gallery Rendering**: Only renders current and adjacent items in slideshow view (not all 600+ items)
 
+### 🎬 Video & Animation Improvements (v1.2.0)
+- **WKWebView Video Player**: Memory-efficient HTML5 video playback supporting WebM, MP4, and more
+- **WebView Animated Images**: Large GIFs display via WKWebView without loading all frames into memory
+- **sourceURL Property**: Direct URL loading for animated images without intermediate decoding
+- **Improved Gesture Support**: Full zoom/pan support for WebView-based animated images
+- **Simplified Audio Controls**: Mute/unmute toggle with persistent state between videos
+
 ## 📦 Installation
 
 ### Swift Package Manager
@@ -77,7 +84,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/blaineam/MediaStream.git", from: "1.1.0")
+    .package(url: "https://github.com/blaineam/MediaStream.git", from: "1.2.0")
 ]
 ```
 

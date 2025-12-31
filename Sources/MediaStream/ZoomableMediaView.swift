@@ -784,13 +784,17 @@ struct ZoomableMediaView: View {
                             if useWebViewForAnimatedImage, let url = animatedImageURL {
                                 // Use WKWebView for memory-efficient animated image display
                                 // Browser handles GIF decoding/caching internally
-                                WebViewAnimatedImageRepresentable(controller: animatedImageController)
-                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
-                                    .scaleEffect(scale)
-                                    .offset(offset)
-                                    .allowsHitTesting(false)
-                                    .gesture(createMagnificationGesture(in: geometry))
-                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                                // Wrap in ZStack with contentShape so gestures work while WebView doesn't steal touches
+                                ZStack {
+                                    WebViewAnimatedImageRepresentable(controller: animatedImageController)
+                                        .allowsHitTesting(false)  // WebView shouldn't steal touches
+                                }
+                                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                                .contentShape(Rectangle())  // Enable hit testing on the container
+                                .scaleEffect(scale)
+                                .offset(offset)
+                                .gesture(createMagnificationGesture(in: geometry))
+                                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
                             } else if useStreaming, let url = animatedImageURL {
                                 // Legacy: streaming view for large GIFs
                                 StreamingAnimatedImageRepresentable(url: url, containerSize: geometry.size)
@@ -927,9 +931,8 @@ struct ZoomableMediaView: View {
             // Critical: Release memory when view disappears to prevent OOM
             // Delete temp GIF files if they exist
             if let tempURL = animatedImageURL,
-               (tempURL.path.contains("streaming_") || tempURL.path.contains("webview_gif_")) {
+               tempURL.path.contains("streaming_") || tempURL.path.contains("webview_gif_") {
                 try? FileManager.default.removeItem(at: tempURL)
-                print("ZoomableMediaView: Deleted temp GIF file")
             }
 
             // Clear image/video/animated image state
@@ -944,7 +947,6 @@ struct ZoomableMediaView: View {
             videoController.destroy()
             animatedImageController.destroy()
 
-            print("ZoomableMediaView: Cleaned up resources for \(mediaItem.id)")
         }
     }
 
@@ -980,7 +982,6 @@ struct ZoomableMediaView: View {
             // Check sourceURL first (simplest), then loadAnimatedImageURL(), then loadAnimatedImageData()
             if let url = mediaItem.sourceURL {
                 // Direct URL - just load in WebView, no downloading/decoding needed
-                print("ZoomableMediaView: Loading animated image via WebView (sourceURL): \(url.lastPathComponent)")
                 animatedImageURL = url
                 useWebViewForAnimatedImage = true
                 hasLoadedMedia = true
@@ -1000,7 +1001,6 @@ struct ZoomableMediaView: View {
                     }
                 }
             } else if let url = await mediaItem.loadAnimatedImageURL() {
-                print("ZoomableMediaView: Loading animated image via WebView: \(url.lastPathComponent)")
                 animatedImageURL = url
                 useWebViewForAnimatedImage = true
                 hasLoadedMedia = true
@@ -1022,7 +1022,6 @@ struct ZoomableMediaView: View {
                 let tempURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent("webview_gif_\(UUID().uuidString).gif")
                 try? data.write(to: tempURL)
-                print("ZoomableMediaView: Loading animated image via WebView from data (\(data.count) bytes)")
 
                 animatedImageURL = tempURL
                 useWebViewForAnimatedImage = true
@@ -1045,7 +1044,6 @@ struct ZoomableMediaView: View {
                 if let loadedImage = await mediaItem.loadImage() {
                     if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
                         // Large GIF - save to temp file and use WebView
-                        print("ZoomableMediaView: Large GIF (\(frames.count) frames) - saving to temp file for WebView")
                         if let tempURL = AnimatedImageHelper.createTempGIFForStreaming(from: loadedImage) {
                             animatedImageURL = tempURL
                             useWebViewForAnimatedImage = true
@@ -1066,7 +1064,6 @@ struct ZoomableMediaView: View {
                             // UIImage will be released when function exits
                         } else {
                             // Fallback: couldn't create temp file, show first frame
-                            print("ZoomableMediaView: ⚠️ Failed to create temp GIF, showing first frame")
                             image = frames.first ?? loadedImage
                             hasLoadedMedia = true
                         }
@@ -1166,7 +1163,7 @@ struct ZoomableMediaView: View {
                     height: dragStartOffset.height + value.translation.height
                 )
             }
-            .onEnded { value in
+            .onEnded { _ in
                 guard scale > minScale else { return }
 
                 // Reset drag start offset

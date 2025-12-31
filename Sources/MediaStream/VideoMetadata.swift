@@ -24,7 +24,7 @@ public enum VideoMetadata {
     /// Get video duration using HTML5 video via WKWebView
     /// Works with WebM, MKV, and other formats AVFoundation doesn't support
     /// - Parameters:
-    ///   - url: URL to the video file (local or presigned remote URL)
+    ///   - url: URL to the video file (local or remote URL)
     ///   - timeout: Maximum time to wait for metadata (default: 10 seconds)
     /// - Returns: Duration in seconds, or nil if unable to determine
     public static func getVideoDurationWebView(from url: URL, timeout: TimeInterval = 10) async -> TimeInterval? {
@@ -67,7 +67,7 @@ public enum VideoMetadata {
     /// Check if video has audio tracks using HTML5 video via WKWebView
     /// Works with WebM, MKV, and other formats AVFoundation doesn't support
     /// - Parameters:
-    ///   - url: URL to the video file (local or presigned remote URL)
+    ///   - url: URL to the video file (local or remote URL)
     ///   - timeout: Maximum time to wait for metadata (default: 10 seconds)
     /// - Returns: True if video has audio, false if silent
     public static func hasAudioTrackWebView(url: URL, timeout: TimeInterval = 10) async -> Bool {
@@ -113,7 +113,7 @@ public enum VideoMetadata {
 
     /// Get both duration and audio info in one call (more efficient)
     /// - Parameters:
-    ///   - url: URL to the video file (local or presigned remote URL)
+    ///   - url: URL to the video file (local or remote URL)
     ///   - headers: Optional HTTP headers for authenticated requests
     ///   - timeout: Maximum time to wait for metadata
     /// - Returns: VideoInfo with duration and audio detection results

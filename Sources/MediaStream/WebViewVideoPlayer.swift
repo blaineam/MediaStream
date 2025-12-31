@@ -71,7 +71,10 @@ private class GestureBlockerView: UIView {
 }
 
 extension GestureBlockerView: UIGestureRecognizerDelegate {
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
         return true
     }
 
@@ -115,25 +118,19 @@ actor WebViewThumbnailQueue {
 
     func acquire() async {
         operationId += 1
-        let myId = operationId
 
         if activeCount < maxConcurrent {
             activeCount += 1
-            print("WebViewThumbnailQueue: Acquired slot #\(myId) (active: \(activeCount)/\(maxConcurrent))")
             return
         }
-
-        print("WebViewThumbnailQueue: Waiting in queue #\(myId) (active: \(activeCount)/\(maxConcurrent), waiters: \(waiters.count))")
         // Wait in queue
         await withCheckedContinuation { continuation in
             waiters.append(continuation)
         }
-        print("WebViewThumbnailQueue: Acquired after waiting #\(myId)")
     }
 
     func release() {
         activeCount -= 1
-        print("WebViewThumbnailQueue: Released slot (active: \(activeCount)/\(maxConcurrent), waiters: \(waiters.count))")
 
         // Wake up next waiter if any
         if !waiters.isEmpty && activeCount < maxConcurrent {
@@ -167,7 +164,12 @@ class VideoPlayerSchemeHandler: NSObject, WKURLSchemeHandler {
 
         if url.path == "/player.html" || url.path.isEmpty || url.path == "/" {
             guard let data = videoHTML.data(using: .utf8) else {
-                urlSchemeTask.didFailWithError(NSError(domain: "VideoPlayer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to encode HTML"]))
+                let error = NSError(
+                domain: "VideoPlayer",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to encode HTML"]
+            )
+            urlSchemeTask.didFailWithError(error)
                 return
             }
 
@@ -236,9 +238,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
     /// Custom URL scheme handler for remote videos
     private var schemeHandler: VideoPlayerSchemeHandler?
 
-    /// Flag indicating user needs to tap video to enable audio (iOS autoplay restriction)
-    @Published public var needsUserGestureForAudio: Bool = false
-
     /// Background color for the player (matches parent view)
     public var backgroundColor: PlatformColor = .black {
         didSet {
@@ -246,7 +245,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
         }
     }
 
-    public override init() {
+    override public init() {
         super.init()
     }
 
@@ -294,7 +293,11 @@ public class WebViewVideoController: NSObject, ObservableObject {
 
         // Inject console.log capture (capture all arguments, not just first)
         let consoleScript = WKUserScript(
-            source: "window.console.log = function(...args) { window.webkit.messageHandlers.consoleLog.postMessage(args.map(a => String(a)).join(' ')); };",
+            source: """
+                window.console.log = function(...args) {
+                    window.webkit.messageHandlers.consoleLog.postMessage(args.map(a => String(a)).join(' '));
+                };
+                """,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
@@ -324,21 +327,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         #elseif canImport(AppKit)
         webView.setValue(false, forKey: "drawsBackground")
-        // macOS-specific CORS bypass attempt
-        if let prefs = webView.configuration.preferences.value(forKey: "developerExtrasEnabled") {
-            // Enable dev tools for debugging if needed
-        }
         #endif
 
         webView.navigationDelegate = self
-
-        // Enable Web Inspector for debugging (Safari > Develop menu)
-        #if DEBUG
-        if #available(iOS 16.4, macOS 13.3, *) {
-            webView.isInspectable = true
-        }
-        #endif
-
         self.webView = webView
         return webView
     }
@@ -383,8 +374,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
             // Load the HTML file with access to the video's directory (which now contains both)
             webView.loadFileURL(htmlFile, allowingReadAccessTo: videoDirectory)
 
-            print("WebViewVideoPlayer: Loading local video from \(url.lastPathComponent) (relative path)")
-
             // Clean up temp file after a delay
             Task {
                 try? await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds to ensure video loads
@@ -412,8 +401,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
             let rootAccess = URL(fileURLWithPath: "/")
             webView.loadFileURL(htmlFile, allowingReadAccessTo: rootAccess)
 
-            print("WebViewVideoPlayer: Loading local video (fallback) from \(url.lastPathComponent)")
-
             Task {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
                 try? FileManager.default.removeItem(at: htmlFile)
@@ -431,7 +418,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
         // Load HTML with the video's base URL so they share the same origin
         // This avoids CORS issues that would taint the canvas and prevent thumbnail capture
         let baseURL = url.deletingLastPathComponent()
-        print("WebViewVideoPlayer: Loading remote video \(url.lastPathComponent) with baseURL \(baseURL)")
         webView.loadHTMLString(html, baseURL: baseURL)
     }
 
@@ -543,57 +529,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     }
                 });
 
-                // Track if user has interacted with audio (required for iOS unmute)
-                var hasUserAudioGesture = false;
-                var pendingUnmute = false;
-                var pendingVolume = 1.0;
-
-                // Click on video enables audio (establishes user gesture context)
-                video.addEventListener('click', (e) => {
-                    console.log('Video CLICKED - enabling audio context');
-                    const wasWaitingForGesture = !hasUserAudioGesture;
-                    hasUserAudioGesture = true;
-                    // Apply any pending unmute
-                    if (pendingUnmute) {
-                        video.muted = false;
-                        video.volume = pendingVolume;
-                        console.log('Applied pending unmute, volume:', pendingVolume, 'muted now:', video.muted);
-                        pendingUnmute = false;
-                        // Notify Swift that audio is now enabled
-                        window.webkit.messageHandlers.videoState.postMessage({ audioEnabled: true });
-                    }
-                    // Toggle play/pause on click (only if we weren't just enabling audio)
-                    if (!wasWaitingForGesture || !pendingUnmute) {
-                        if (video.paused) {
-                            video.play();
-                        } else {
-                            video.pause();
-                        }
-                    }
-                });
-
-                // Also enable on touchstart for iOS
-                video.addEventListener('touchstart', (e) => {
-                    if (!hasUserAudioGesture) {
-                        console.log('Video TOUCHED - enabling audio context');
-                        hasUserAudioGesture = true;
-                        if (pendingUnmute) {
-                            video.muted = false;
-                            video.volume = pendingVolume;
-                            console.log('Applied pending unmute on touch, volume:', pendingVolume, 'muted now:', video.muted);
-                            pendingUnmute = false;
-                            // Notify Swift that audio is now enabled
-                            window.webkit.messageHandlers.videoState.postMessage({ audioEnabled: true });
-                        }
-                    }
-                }, { passive: true });
-
                 // Exposed functions for Swift to call
                 window.videoPlay = () => {
                     console.log('videoPlay called, paused: ' + video.paused + ', readyState: ' + video.readyState + ', muted: ' + video.muted);
-
-                    // Don't touch muted state - let SwiftUI controls handle it
-                    // iOS kills playback if we unmute programmatically without user gesture
                     video.play().then(() => {
                         console.log('Play started successfully, currentTime: ' + video.currentTime);
                         window.webkit.messageHandlers.videoState.postMessage({ playing: true, currentTime: video.currentTime });
@@ -609,28 +547,13 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 };
                 window.videoSeek = (time) => { video.currentTime = time; };
                 window.videoSetVolume = (vol) => {
-                    console.log('Setting volume to:', vol, 'hasUserGesture:', hasUserAudioGesture);
-                    pendingVolume = Math.max(0, Math.min(1, vol));
-                    video.volume = pendingVolume;
-                    console.log('Volume after set:', video.volume, 'muted:', video.muted);
+                    const newVol = Math.max(0, Math.min(1, vol));
+                    video.volume = newVol;
+                    console.log('Volume set to:', video.volume);
                 };
                 window.videoSetMuted = (muted) => {
-                    console.log('Setting muted to:', muted, 'was:', video.muted, 'hasUserGesture:', hasUserAudioGesture);
-                    if (!muted && !hasUserAudioGesture) {
-                        // Queue the unmute for when user taps the video
-                        console.log('Queuing unmute - waiting for user gesture (tap video to enable audio)');
-                        pendingUnmute = true;
-                        window.webkit.messageHandlers.videoState.postMessage({ needsUserGesture: true });
-                    } else {
-                        video.muted = muted;
-                        console.log('Muted after set:', video.muted);
-                        // If iOS silently ignored unmute, report it
-                        if (!muted && video.muted) {
-                            console.log('WARNING: iOS rejected unmute request');
-                            pendingUnmute = true;
-                            window.webkit.messageHandlers.videoState.postMessage({ needsUserGesture: true });
-                        }
-                    }
+                    video.muted = muted;
+                    console.log('Muted set to:', video.muted);
                 };
                 window.videoGetState = () => ({
                     currentTime: video.currentTime,
@@ -669,7 +592,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
     private func pollPlaybackState() {
         guard let webView = webView, isReady else { return }
 
-        webView.evaluateJavaScript("window.videoGetState()") { [weak self] result, error in
+        webView.evaluateJavaScript("window.videoGetState()") { [weak self] result, _ in
             guard let self = self, let dict = result as? [String: Any] else { return }
 
             Task { @MainActor in
@@ -696,11 +619,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
             print("WebViewVideoPlayer: No webView for play()")
             return
         }
-        webView.evaluateJavaScript("window.videoPlay()") { result, error in
+        webView.evaluateJavaScript("window.videoPlay()") { _, error in
             if let error = error {
                 print("WebViewVideoPlayer: play() error - \(error.localizedDescription)")
-            } else {
-                print("WebViewVideoPlayer: play() called")
             }
         }
         isPlaying = true
@@ -712,11 +633,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
             print("WebViewVideoPlayer: No webView for pause()")
             return
         }
-        webView.evaluateJavaScript("window.videoPause()") { result, error in
+        webView.evaluateJavaScript("window.videoPause()") { _, error in
             if let error = error {
                 print("WebViewVideoPlayer: pause() error - \(error.localizedDescription)")
-            } else {
-                print("WebViewVideoPlayer: pause() called")
             }
         }
         isPlaying = false
@@ -750,7 +669,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
         webView?.removeFromSuperview()
         webView = nil
         schemeHandler = nil
-        print("WebViewVideoPlayer: Destroyed controller and released memory")
     }
 
     public func seek(to time: Double) {
@@ -823,8 +741,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
             print("WebViewVideoPlayer: generateThumbnail failed - webView=\(webView != nil), isReady=\(isReady)")
             return nil
         }
-
-        print("WebViewVideoPlayer: Generating thumbnail via JS canvas, target size: \(size)")
 
         // Use JavaScript to capture the video frame to a canvas and return as base64
         let captureJS = """
@@ -915,7 +831,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
 
                 #if canImport(UIKit)
                 if let image = UIImage(data: imageData) {
-                    print("WebViewVideoPlayer: JS thumbnail ✓ - \(image.size)")
                     continuation.resume(returning: image)
                 } else {
                     print("WebViewVideoPlayer: Failed to create UIImage from data")
@@ -923,7 +838,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 }
                 #elseif canImport(AppKit)
                 if let image = NSImage(data: imageData) {
-                    print("WebViewVideoPlayer: JS thumbnail ✓ - \(image.size)")
                     continuation.resume(returning: image)
                 } else {
                     print("WebViewVideoPlayer: Failed to create NSImage from data")
@@ -938,7 +852,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
 
     /// Get video duration from URL (static method for use without player instance)
     public static func getVideoDuration(from url: URL, headers: [String: String]? = nil) async -> TimeInterval? {
-        print("WebViewVideoPlayer: Getting duration for \(url.lastPathComponent)")
         let controller = await MainActor.run { WebViewVideoController() }
 
         return await withCheckedContinuation { continuation in
@@ -969,7 +882,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 #endif
 
                 let duration = controller.duration > 0 ? controller.duration : nil
-                print("WebViewVideoPlayer: Duration for \(url.lastPathComponent): \(duration ?? -1)s (ready: \(controller.isReady), attempts: \(attempts))")
                 continuation.resume(returning: duration)
             }
         }
@@ -1047,8 +959,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
             Task { @MainActor in
                 let webView = controller.createWebView()
 
-                print("WebViewVideoPlayer: Starting thumbnail generation for \(url.lastPathComponent)")
-
                 // WKWebView needs to be in view hierarchy for proper loading on iOS
                 #if canImport(UIKit)
                 // Create minimal offscreen window - needed for WKWebView to process loads
@@ -1082,7 +992,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 }
 
                 guard controller.isReady else {
-                    print("WebViewVideoPlayer: Video not ready after \(attempts) attempts for \(url.lastPathComponent)")
                     #if canImport(UIKit)
                     webView.removeFromSuperview()
                     thumbnailWindow.isHidden = true
@@ -1092,8 +1001,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     continuation.resume(returning: nil)
                     return
                 }
-
-                print("WebViewVideoPlayer: Video ready after \(attempts) attempts for \(url.lastPathComponent)")
 
                 // Atomic check-and-capture: poll until we get a valid thumbnail
                 // This avoids the race where readyState drops between check and capture
@@ -1166,18 +1073,16 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     // Try to play every 10 attempts to force frame buffering
                     if captureAttempts == 1 || captureAttempts % 10 == 0 {
                         let playResult = await withCheckedContinuation { (playCont: CheckedContinuation<[String: Any]?, Never>) in
-                            webView.evaluateJavaScript(playJS) { result, error in
+                            webView.evaluateJavaScript(playJS) { result, _ in
                                 playCont.resume(returning: result as? [String: Any])
                             }
                         }
-                        if let playResult = playResult, captureAttempts == 1 {
-                            print("WebViewVideoPlayer: Play attempt for \(url.lastPathComponent): \(playResult)")
-                        }
+                        _ = playResult  // Silence unused variable warning
                         try? await Task.sleep(nanoseconds: 300_000_000)  // 300ms after play to let frames decode
                     }
 
                     let result = await withCheckedContinuation { (captureCont: CheckedContinuation<[String: Any]?, Never>) in
-                        webView.evaluateJavaScript(atomicCaptureJS) { result, error in
+                        webView.evaluateJavaScript(atomicCaptureJS) { result, _ in
                             captureCont.resume(returning: result as? [String: Any])
                         }
                     }
@@ -1194,17 +1099,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
                                 #elseif canImport(AppKit)
                                 thumbnail = NSImage(data: imageData)
                                 #endif
-                                if thumbnail != nil {
-                                    print("WebViewVideoPlayer: Thumbnail captured on attempt \(captureAttempts) for \(url.lastPathComponent)")
-                                }
-                            }
-                        } else if let error = result["error"] as? String {
-                            // Log every 10 attempts
-                            if captureAttempts % 10 == 0 {
-                                let readyState = result["readyState"] ?? "?"
-                                print("WebViewVideoPlayer: Capture attempt \(captureAttempts): \(error), readyState=\(readyState)")
                             }
                         }
+                        // Error case - continue trying
                     }
 
                     if thumbnail == nil {
@@ -1213,7 +1110,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 }
 
                 guard let thumb = thumbnail else {
-                    print("WebViewVideoPlayer: Failed to capture after \(captureAttempts) attempts for \(url.lastPathComponent)")
                     #if canImport(UIKit)
                     webView.removeFromSuperview()
                     thumbnailWindow.isHidden = true
@@ -1223,8 +1119,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     continuation.resume(returning: nil)
                     return
                 }
-
-                print("WebViewVideoPlayer: Thumbnail ✓ for \(url.lastPathComponent) - size: \(thumb.size)")
 
                 // Cleanup
                 #if canImport(UIKit)
@@ -1256,13 +1150,11 @@ extension WebViewVideoController: WKScriptMessageHandler {
                     }
                 }
                 self.isReady = true
-                print("WebViewVideoPlayer: Video ready! Duration: \(self.duration)s")
 
             case "videoEnded":
                 self.didReachEnd = true
                 self.isPlaying = false
                 self.onVideoEnd?()
-                print("WebViewVideoPlayer: Video ended")
 
             case "videoError":
                 if let body = message.body as? [String: Any],
@@ -1283,14 +1175,6 @@ extension WebViewVideoController: WKScriptMessageHandler {
                     if let playing = body["playing"] as? Bool {
                         self.isPlaying = playing
                     }
-                    if let needsGesture = body["needsUserGesture"] as? Bool, needsGesture {
-                        self.needsUserGestureForAudio = true
-                        print("WebViewVideoPlayer: Audio requires user gesture - tap video to enable")
-                    }
-                    if let audioEnabled = body["audioEnabled"] as? Bool, audioEnabled {
-                        self.needsUserGestureForAudio = false
-                        print("WebViewVideoPlayer: Audio enabled after user gesture")
-                    }
                 }
 
             default:
@@ -1304,7 +1188,6 @@ extension WebViewVideoController: WKScriptMessageHandler {
 
 extension WebViewVideoController: WKNavigationDelegate {
     nonisolated public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        print("WebViewVideoPlayer: HTML loaded successfully")
     }
 
     nonisolated public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1316,7 +1199,11 @@ extension WebViewVideoController: WKNavigationDelegate {
     }
 
     /// Handle HTTP Basic Auth challenges for video requests
-    nonisolated public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+    nonisolated public func webView(
+        _ webView: WKWebView,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
         // Only handle HTTP Basic Auth
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodHTTPBasic else {
             completionHandler(.performDefaultHandling, nil)
@@ -1337,11 +1224,9 @@ extension WebViewVideoController: WKNavigationDelegate {
             // Check for credentials - need to dispatch to main actor
             Task { @MainActor in
                 if let creds = MediaStreamConfiguration.credentials(for: url) {
-                    print("WebViewVideoPlayer: Providing credentials for \(host)")
                     let credential = URLCredential(user: creds.username, password: creds.password, persistence: .forSession)
                     completionHandler(.useCredential, credential)
                 } else {
-                    print("WebViewVideoPlayer: No credentials configured for \(host)")
                     completionHandler(.performDefaultHandling, nil)
                 }
             }
@@ -1363,7 +1248,7 @@ public struct WebViewVideoRepresentable: UIViewRepresentable {
 
     public func makeUIView(context: Context) -> WKWebView {
         let webView = controller.webView ?? controller.createWebView()
-        webView.isUserInteractionEnabled = false // Pass touches to SwiftUI
+        webView.isUserInteractionEnabled = false  // Let SwiftUI handle controls
         return webView
     }
 
@@ -1402,16 +1287,10 @@ public struct CustomWebViewVideoPlayerView: View {
     @Binding var isInteractingWithControls: Bool
 
     @State private var isDragging = false
-    @State private var showVolumeSlider = false
     @State private var scrubPosition: Double = 0
-    @State private var volumeCollapseTimer: Timer?
     @State private var scrubPreviewTask: Task<Void, Never>?
 
-    @AppStorage("MediaStream_WebViewVideoVolume") private var volume: Double = 1.0
     @AppStorage("MediaStream_WebViewVideoMuted") private var isMuted: Bool = false
-
-    /// Track if user has interacted with audio controls (required for iOS unmuting)
-    @State private var hasUserAudioInteraction = false
 
     public init(
         controller: WebViewVideoController,
@@ -1429,23 +1308,10 @@ public struct CustomWebViewVideoPlayerView: View {
         self._isInteractingWithControls = isInteractingWithControls
     }
 
-    private var volumeIcon: String {
-        if isMuted || volume == 0 {
-            return "speaker.slash.fill"
-        } else if volume > 0.66 {
-            return "speaker.wave.3.fill"
-        } else if volume > 0.33 {
-            return "speaker.wave.2.fill"
-        } else {
-            return "speaker.wave.1.fill"
-        }
-    }
-
     public var body: some View {
         ZStack {
-            // Video layer - allow hit testing when we need user gesture for audio
+            // Video layer
             WebViewVideoRepresentable(controller: controller)
-                .allowsHitTesting(controller.needsUserGestureForAudio)
 
             // Controls overlay
             if showControls {
@@ -1514,75 +1380,21 @@ public struct CustomWebViewVideoPlayerView: View {
                             .foregroundColor(.white)
                             .monospacedDigit()
 
-                        // Volume controls
-                        HStack(spacing: 8) {
-                            #if os(macOS)
-                            // Volume slider (expandable) - macOS only
-                            // iOS ignores video.volume (always 1.0, uses device volume buttons)
-                            if showVolumeSlider {
-                                Slider(value: $volume, in: 0...1) { editing in
-                                    hasUserAudioInteraction = true
-                                    // Always unmute when interacting with volume slider
-                                    if !editing {
-                                        // On release, set final volume
-                                        controller.setVolume(Float(volume))
-                                        if volume > 0 {
-                                            isMuted = false
-                                            controller.setMuted(false)
-                                        }
-                                    }
-                                    resetVolumeCollapseTimer()
-                                }
-                                .frame(width: 80)
-                                .tint(.white)
-                                .onChange(of: volume) { _, newValue in
-                                    hasUserAudioInteraction = true
-                                    // Unmute and set volume on every change
-                                    controller.setMuted(false)
-                                    controller.setVolume(Float(newValue))
-                                    if newValue > 0 {
-                                        isMuted = false
-                                    }
-                                    resetVolumeCollapseTimer()
-                                }
-                            }
-                            #endif
+                        // Mute button (WKWebView: mute/unmute only, always full volume)
+                        Button(action: {
+                            toggleMute()
+                        }) {
+                            ZStack {
+                                Circle()
+                                    .fill(.ultraThinMaterial)
+                                    .frame(width: 36, height: 36)
 
-                            // Mute button (iOS: just mute toggle, macOS: expands to show slider)
-                            Button(action: {
-                                hasUserAudioInteraction = true
-                                #if os(macOS)
-                                if showVolumeSlider {
-                                    toggleMute()
-                                } else {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        showVolumeSlider = true
-                                    }
-                                    // Always sync volume and muted state when slider is shown
-                                    controller.setVolume(Float(volume))
-                                    controller.setMuted(isMuted)
-                                    if !isMuted {
-                                        controller.setMuted(false)
-                                    }
-                                }
-                                resetVolumeCollapseTimer()
-                                #else
-                                // iOS: just toggle mute (volume slider doesn't work on iOS WebKit)
-                                toggleMute()
-                                #endif
-                            }) {
-                                ZStack {
-                                    Circle()
-                                        .fill(.ultraThinMaterial)
-                                        .frame(width: 36, height: 36)
-
-                                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(.white)
-                                }
+                                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
@@ -1600,11 +1412,10 @@ public struct CustomWebViewVideoPlayerView: View {
             controller.onVideoEnd = onVideoEnd
         }
         .onChange(of: controller.isReady) { _, isReady in
-            // Only apply stored audio settings if user has explicitly interacted with audio controls
-            // iOS kills playback if we programmatically unmute without user gesture
-            // So we wait for the user to tap the volume button before applying their saved preferences
-            if isReady && hasUserAudioInteraction {
-                controller.setVolume(Float(volume))
+            // When video becomes ready, apply the user's stored mute preference
+            // WKWebView uses full volume - mute/unmute only
+            if isReady {
+                controller.setVolume(1.0)
                 controller.setMuted(isMuted)
             }
         }
@@ -1631,7 +1442,6 @@ public struct CustomWebViewVideoPlayerView: View {
         }
         .onDisappear {
             controller.pause()
-            volumeCollapseTimer?.invalidate()
             scrubPreviewTask?.cancel()
         }
     }
@@ -1646,21 +1456,7 @@ public struct CustomWebViewVideoPlayerView: View {
     private func toggleMute() {
         isMuted.toggle()
         controller.setMuted(isMuted)
-        if !isMuted && volume == 0 {
-            volume = 0.5
-            controller.setVolume(0.5)
-        }
-    }
-
-    private func resetVolumeCollapseTimer() {
-        volumeCollapseTimer?.invalidate()
-        volumeCollapseTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { _ in
-            Task { @MainActor in
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showVolumeSlider = false
-                }
-            }
-        }
+        controller.setVolume(1.0)  // WKWebView: always full volume
     }
 }
 

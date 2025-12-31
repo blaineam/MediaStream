@@ -1302,10 +1302,6 @@ fileprivate struct PreviewSampleMedia {
         // Add networked test media items
         print("🌐 Adding networked test media items...")
 
-        // For authenticated remote videos, the app should provide presigned URLs
-        // that include auth in query params (e.g., S3 presigned URLs)
-        // MediaStream just plays whatever URL it's given
-
         // Public test video - MP4 (Big Buck Bunny - Creative Commons)
         let networkVideoURL = URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4")!
         items.insert(VideoMediaItem(

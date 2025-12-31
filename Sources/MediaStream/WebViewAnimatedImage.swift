@@ -27,7 +27,7 @@ public class WebViewAnimatedImageController: NSObject, ObservableObject {
     private(set) var webView: WKWebView?
     private var currentURL: URL?
 
-    public override init() {
+    override public init() {
         super.init()
     }
 
@@ -78,7 +78,6 @@ public class WebViewAnimatedImageController: NSObject, ObservableObject {
     /// Load an animated image from URL
     public func load(url: URL, headers: [String: String]? = nil) {
         guard let webView = webView else {
-            print("WebViewAnimatedImage: No webView available")
             return
         }
 
@@ -211,11 +210,8 @@ public class WebViewAnimatedImageController: NSObject, ObservableObject {
                 switch message.name {
                 case "imageReady":
                     controller?.isReady = true
-                    print("WebViewAnimatedImage: Image ready")
                 case "consoleLog":
-                    if let msg = message.body as? String {
-                        print("WebViewAnimatedImage JS: \(msg)")
-                    }
+                    break
                 default:
                     break
                 }

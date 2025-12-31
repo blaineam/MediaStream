@@ -45,7 +45,6 @@ public enum MediaStreamCache {
     public static func clearAll() {
         ThumbnailCache.shared.clear()
         DiskThumbnailCache.shared.clearAll()
-        print("🧹 MediaStreamCache: Cleared all caches")
     }
 
     /// Get cache statistics
@@ -153,14 +152,18 @@ public final class DiskThumbnailCache: @unchecked Sendable {
         if image.images != nil { return }
         guard let data = image.jpegData(compressionQuality: compressionQuality) else { return }
         #elseif canImport(AppKit)
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let data = NSBitmapImageRep(cgImage: cgImage).representation(using: .jpeg, properties: [.compressionFactor: compressionQuality]) else { return }
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: compressionQuality]) else {
+            return
+        }
         #endif
 
         do {
             try data.write(to: path, options: .atomic)
         } catch {
-            print("⚠️ DiskThumbnailCache: Failed to save thumbnail: \(error)")
         }
     }
 
@@ -194,7 +197,6 @@ public final class DiskThumbnailCache: @unchecked Sendable {
         do {
             try data.write(to: path, options: .atomic)
         } catch {
-            print("⚠️ DiskThumbnailCache: Failed to save metadata: \(error)")
         }
     }
 
@@ -258,7 +260,6 @@ public final class DiskThumbnailCache: @unchecked Sendable {
             totalSize -= file.size
         }
 
-        print("🧹 DiskThumbnailCache: Evicted to \(totalSize / 1024 / 1024)MB")
     }
 
     /// Clear all cached data
@@ -273,7 +274,6 @@ public final class DiskThumbnailCache: @unchecked Sendable {
         try? fileManager.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
 
-        print("🧹 DiskThumbnailCache: Cleared all cached data")
     }
 
     /// Get cache statistics
@@ -398,7 +398,6 @@ public final class ThumbnailCache: @unchecked Sendable {
 
         let targetBytes = maxMemoryBytes / 2
         evictToSize(targetBytes)
-        print("🧹 ThumbnailCache: Memory pressure - evicted to \(currentMemoryBytes / 1024 / 1024)MB")
     }
 
     /// Get a cached thumbnail, or nil if not cached
@@ -452,7 +451,6 @@ public final class ThumbnailCache: @unchecked Sendable {
         defer { lock.unlock() }
         cache.removeAll()
         currentMemoryBytes = 0
-        print("🧹 ThumbnailCache: Cleared all entries")
     }
 
     // MARK: - Disk Cache Integration
@@ -639,7 +637,11 @@ extension ThumbnailCache {
     ///   - targetSize: The target size for the thumbnail
     ///   - time: The time in the video to capture (default: beginning)
     /// - Returns: A thumbnail image or nil if generation fails
-    public static func createVideoThumbnail(from videoURL: URL, targetSize: CGFloat = thumbnailSize, at time: CMTime = .zero) async -> PlatformImage? {
+    public static func createVideoThumbnail(
+        from videoURL: URL,
+        targetSize: CGFloat = thumbnailSize,
+        at time: CMTime = .zero
+    ) async -> PlatformImage? {
         // Get headers from MediaStreamConfiguration if available
         let headers = await MediaStreamConfiguration.headersAsync(for: videoURL)
 

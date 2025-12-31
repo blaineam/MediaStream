@@ -1009,7 +1009,13 @@ fileprivate struct PreviewImageMediaItem: MediaItem {
     private let caption: String?
     private let animatedDuration: TimeInterval?
 
-    init(id: UUID = UUID(), imageLoader: @escaping @Sendable () async -> PlatformImage?, caption: String? = nil, type: MediaType = .image, animatedDuration: TimeInterval? = nil) {
+    init(
+        id: UUID = UUID(),
+        imageLoader: @escaping @Sendable () async -> PlatformImage?,
+        caption: String? = nil,
+        type: MediaType = .image,
+        animatedDuration: TimeInterval? = nil
+    ) {
         self.id = id
         self.type = type
         self.imageLoader = imageLoader
@@ -1055,7 +1061,13 @@ fileprivate struct PreviewVideoMediaItem: MediaItem {
     private let caption: String?
     private let duration: TimeInterval?
 
-    init(id: UUID = UUID(), videoURL: URL, thumbnailLoader: @escaping @Sendable () async -> PlatformImage?, caption: String? = nil, duration: TimeInterval? = nil) {
+    init(
+        id: UUID = UUID(),
+        videoURL: URL,
+        thumbnailLoader: @escaping @Sendable () async -> PlatformImage?,
+        caption: String? = nil,
+        duration: TimeInterval? = nil
+    ) {
         self.id = id
         self.videoURL = videoURL
         self.thumbnailLoader = thumbnailLoader

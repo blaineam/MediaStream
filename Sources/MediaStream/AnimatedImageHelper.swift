@@ -38,7 +38,7 @@ public class StreamingAnimatedImageView: UIView {
         return iv
     }()
 
-    public override init(frame: CGRect) {
+    override public init(frame: CGRect) {
         super.init(frame: frame)
         setup()
     }
@@ -188,10 +188,8 @@ public class StreamingAnimatedImageView: UIView {
     private func evictDistantFrames(from currentIndex: Int) {
         let keepRange = max(0, currentIndex - 1)...min(frameCount - 1, currentIndex + Self.frameCacheSize - 2)
 
-        for key in frameCache.keys {
-            if !keepRange.contains(key) {
-                frameCache.removeValue(forKey: key)
-            }
+        for key in frameCache.keys where !keepRange.contains(key) {
+            frameCache.removeValue(forKey: key)
         }
     }
 
@@ -241,7 +239,7 @@ public class StreamingAnimatedImageView: UIView {
         }
     }
 
-    public override func willMove(toWindow newWindow: UIWindow?) {
+    override public func willMove(toWindow newWindow: UIWindow?) {
         super.willMove(toWindow: newWindow)
         if newWindow == nil {
             stopAnimating()
@@ -498,7 +496,6 @@ public struct AnimatedImageHelper {
             return nil
         }
 
-        print("AnimatedImageHelper: Created temp GIF for streaming (\(frameCount) frames) at \(tempURL.lastPathComponent)")
         return tempURL
     }
     #endif
