@@ -749,8 +749,9 @@ struct ZoomableMediaView: View {
 
     @State private var image: PlatformImage?
     @State private var videoURL: URL?
-    @State private var animatedImageURL: URL?  // For streaming large GIFs
-    @State private var useStreaming: Bool = false  // Whether to use streaming for this animated image
+    @State private var animatedImageURL: URL?  // For WebView-based animated image display
+    @State private var useStreaming: Bool = false  // Legacy: Whether to use streaming for this animated image
+    @State private var useWebViewForAnimatedImage: Bool = false  // Whether to use WKWebView for animated image
     @State private var isLoading = false  // Start false, only true when actively loading
     @State private var isLoadingMedia = false  // Flag to prevent concurrent loading
     @State private var scale: CGFloat = 1.0
@@ -762,6 +763,7 @@ struct ZoomableMediaView: View {
     @State private var videoWasAtEnd: Bool = false
     @State private var hasLoadedMedia: Bool = false
     @StateObject private var videoController = WebViewVideoController()
+    @StateObject private var animatedImageController = WebViewAnimatedImageController()
 
     private let minScale: CGFloat = 1.0
     private let maxScale: CGFloat = 4.0
@@ -779,8 +781,18 @@ struct ZoomableMediaView: View {
                     Group {
                         if mediaItem.type == .animatedImage {
                             #if canImport(UIKit)
-                            if useStreaming, let url = animatedImageURL {
-                                // Use streaming view for large GIFs (memory-efficient)
+                            if useWebViewForAnimatedImage, let url = animatedImageURL {
+                                // Use WKWebView for memory-efficient animated image display
+                                // Browser handles GIF decoding/caching internally
+                                WebViewAnimatedImageRepresentable(controller: animatedImageController)
+                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                                    .scaleEffect(scale)
+                                    .offset(offset)
+                                    .allowsHitTesting(false)
+                                    .gesture(createMagnificationGesture(in: geometry))
+                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                            } else if useStreaming, let url = animatedImageURL {
+                                // Legacy: streaming view for large GIFs
                                 StreamingAnimatedImageRepresentable(url: url, containerSize: geometry.size)
                                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
                                     .scaleEffect(scale)
@@ -788,7 +800,7 @@ struct ZoomableMediaView: View {
                                     .gesture(createMagnificationGesture(in: geometry))
                                     .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
                             } else if let image = image {
-                                // Use regular animated image view for small GIFs
+                                // Use regular animated image view for small GIFs (already in memory)
                                 AnimatedImageView(image: image, scale: scale, offset: offset)
                                     .gesture(createMagnificationGesture(in: geometry))
                                     .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
@@ -905,10 +917,11 @@ struct ZoomableMediaView: View {
         }
         .onDisappear {
             // Critical: Release memory when view disappears to prevent OOM
-            // Delete temp streaming GIF file if it exists
-            if let tempURL = animatedImageURL, tempURL.path.contains("streaming_") {
+            // Delete temp GIF files if they exist
+            if let tempURL = animatedImageURL,
+               (tempURL.path.contains("streaming_") || tempURL.path.contains("webview_gif_")) {
                 try? FileManager.default.removeItem(at: tempURL)
-                print("ZoomableMediaView: Deleted temp streaming GIF")
+                print("ZoomableMediaView: Deleted temp GIF file")
             }
 
             // Clear image/video/animated image state
@@ -916,10 +929,12 @@ struct ZoomableMediaView: View {
             videoURL = nil
             animatedImageURL = nil
             useStreaming = false
+            useWebViewForAnimatedImage = false
             hasLoadedMedia = false
 
-            // Fully destroy video controller to release WKWebView memory
+            // Fully destroy controllers to release WKWebView memory
             videoController.destroy()
+            animatedImageController.destroy()
 
             print("ZoomableMediaView: Cleaned up resources for \(mediaItem.id)")
         }
@@ -952,69 +967,48 @@ struct ZoomableMediaView: View {
             }
         case .animatedImage:
             #if canImport(UIKit)
-            // Check if we can use streaming (memory-efficient for large GIFs)
-            // First try URL, then try Data
+            // Use WKWebView for animated images - much more memory efficient
+            // Browser handles GIF frame decoding/caching internally
             if let url = await mediaItem.loadAnimatedImageURL() {
-                let frameCount = AnimatedImageHelper.getFrameCount(from: url)
-                print("ZoomableMediaView: Animated image (URL) has \(frameCount) frames")
+                print("ZoomableMediaView: Loading animated image via WebView: \(url.lastPathComponent)")
+                animatedImageURL = url
+                useWebViewForAnimatedImage = true
+                hasLoadedMedia = true
 
-                if AnimatedImageHelper.requiresStreaming(frameCount: frameCount) {
-                    print("ZoomableMediaView: Using streaming for large GIF (\(frameCount) frames)")
-                    animatedImageURL = url
-                    useStreaming = true
-                    hasLoadedMedia = true
-                } else {
-                    // Use AnimatedImageHelper to properly load all frames (loadImage might only get first frame)
-                    if let animatedImage = AnimatedImageHelper.createAnimatedImage(from: url) {
-                        print("ZoomableMediaView: Loaded animated image with \(animatedImage.images?.count ?? 1) frames")
-                        image = animatedImage
-                        hasLoadedMedia = true
-                    } else if let loadedImage = await mediaItem.loadImage() {
-                        // Fallback to loadImage if AnimatedImageHelper fails
-                        image = loadedImage
-                        hasLoadedMedia = true
+                // Setup WebView and load
+                await MainActor.run {
+                    if animatedImageController.webView == nil {
+                        _ = animatedImageController.createWebView()
                     }
+                    animatedImageController.load(url: url)
                 }
             } else if let data = await mediaItem.loadAnimatedImageData() {
-                // Have raw data - check frame count before creating full animated image
-                let frameCount = AnimatedImageHelper.getFrameCount(from: data)
-                print("ZoomableMediaView: Animated image (Data) has \(frameCount) frames")
+                // Save data to temp file for WebView
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("webview_gif_\(UUID().uuidString).gif")
+                try? data.write(to: tempURL)
+                print("ZoomableMediaView: Loading animated image via WebView from data (\(data.count) bytes)")
 
-                if AnimatedImageHelper.requiresStreaming(frameCount: frameCount) {
-                    // Too many frames - create streaming view from data
-                    print("ZoomableMediaView: Using streaming for large GIF (\(frameCount) frames)")
-                    // Save data to temp file for streaming view
-                    let tempURL = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("streaming_\(UUID().uuidString).gif")
-                    try? data.write(to: tempURL)
-                    animatedImageURL = tempURL
-                    useStreaming = true
-                    hasLoadedMedia = true
-                } else {
-                    // Small enough - create animated image
-                    if let animatedImage = AnimatedImageHelper.createAnimatedImage(from: data) {
-                        image = animatedImage
-                        hasLoadedMedia = true
+                animatedImageURL = tempURL
+                useWebViewForAnimatedImage = true
+                hasLoadedMedia = true
+
+                await MainActor.run {
+                    if animatedImageController.webView == nil {
+                        _ = animatedImageController.createWebView()
                     }
+                    animatedImageController.load(url: tempURL)
                 }
             } else {
-                // No URL or Data available - fall back to loadImage()
+                // No URL or Data - fall back to loadImage()
+                // For small GIFs, keep in memory. For large, show first frame only.
                 if let loadedImage = await mediaItem.loadImage() {
-                    // Check if this is a large animated GIF that needs streaming
                     if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
-                        print("ZoomableMediaView: Large GIF (\(frames.count) frames) - converting to streaming format")
-                        // Create temp GIF file for streaming to avoid OOM
-                        if let tempURL = AnimatedImageHelper.createTempGIFForStreaming(from: loadedImage) {
-                            animatedImageURL = tempURL
-                            useStreaming = true
-                            hasLoadedMedia = true
-                            // Don't keep the full UIImage in memory - streaming will reload from file
-                        } else {
-                            // Fallback: couldn't create temp file, show first frame only to prevent crash
-                            print("ZoomableMediaView: ⚠️ Failed to create streaming GIF, showing first frame only")
-                            image = frames.first ?? loadedImage
-                            hasLoadedMedia = true
-                        }
+                        // Large GIF with no URL/Data - can't use WebView, show first frame
+                        print("ZoomableMediaView: ⚠️ Large GIF (\(frames.count) frames) with no URL - showing first frame only")
+                        print("ZoomableMediaView: Implement loadAnimatedImageURL() for better performance")
+                        image = frames.first ?? loadedImage
+                        hasLoadedMedia = true
                     } else {
                         // Small enough to keep in memory
                         image = loadedImage
