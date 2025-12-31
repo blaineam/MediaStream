@@ -153,19 +153,16 @@ public struct MediaGalleryView: View {
                     .zIndex(currentIndex == index ? 1 : 0)
                     .allowsHitTesting(currentIndex == index)
                     .simultaneousGesture(
-                        // Navigation gesture that only activates when NOT zoomed
-                        // Uses simultaneousGesture so it doesn't block child pan when zoomed
-                        DragGesture(minimumDistance: 50)
-                            .onChanged { value in
-                                // Track if this is a valid navigation swipe
-                                if !isZoomed && abs(value.translation.width) > abs(value.translation.height) {
-                                    // Horizontal swipe while not zoomed - this will navigate
-                                }
-                            }
+                        // Navigation gesture - only activates for large horizontal swipes when not zoomed
+                        DragGesture(minimumDistance: 100)
                             .onEnded { value in
-                                // Only navigate if not zoomed and horizontal swipe
+                                // Block if zoomed or interacting with controls
                                 guard !isZoomed else { return }
-                                if abs(value.translation.width) > abs(value.translation.height) {
+                                guard !MediaControlsInteractionState.shared.isInteracting else { return }
+                                let horizontalAmount = abs(value.translation.width)
+                                let verticalAmount = abs(value.translation.height)
+                                // Require clearly horizontal (2:1 ratio) and significant distance
+                                if horizontalAmount > verticalAmount * 2 && horizontalAmount > 100 {
                                     if value.translation.width < 0 {
                                         nextItem()
                                     } else {
@@ -301,7 +298,10 @@ public struct MediaGalleryView: View {
         #endif
         #if os(iOS)
         .statusBar(hidden: true)
-        .sheet(isPresented: $showShareSheet) {
+        .sheet(isPresented: Binding(
+            get: { showShareSheet && shareItem != nil },
+            set: { showShareSheet = $0 }
+        )) {
             if let item = shareItem {
                 ShareSheet(items: [item])
             }
@@ -918,6 +918,50 @@ public struct MediaGalleryView: View {
 #if DEBUG
 import SwiftUI
 import AVFoundation
+import ImageIO
+
+// MARK: - UIImage Animated GIF Extension
+
+#if canImport(UIKit)
+extension UIImage {
+    /// Create an animated UIImage from GIF data
+    static func animatedImageWithAnimatedGIFData(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+
+        let count = CGImageSourceGetCount(source)
+        guard count > 1 else {
+            // Single frame, just return regular image
+            return UIImage(data: data)
+        }
+
+        var images: [UIImage] = []
+        var duration: TimeInterval = 0
+
+        for i in 0..<count {
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
+            images.append(UIImage(cgImage: cgImage))
+
+            // Get frame duration
+            if let properties = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [String: Any],
+               let gifProperties = properties[kCGImagePropertyGIFDictionary as String] as? [String: Any] {
+                if let delayTime = gifProperties[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double, delayTime > 0 {
+                    duration += delayTime
+                } else if let delayTime = gifProperties[kCGImagePropertyGIFDelayTime as String] as? Double {
+                    duration += delayTime
+                } else {
+                    duration += 0.1 // Default frame duration
+                }
+            } else {
+                duration += 0.1
+            }
+        }
+
+        return UIImage.animatedImage(with: images, duration: duration)
+    }
+}
+#endif
 
 #Preview("Slideshow with Real Media") {
     MediaGalleryView(
@@ -963,12 +1007,14 @@ fileprivate struct PreviewImageMediaItem: MediaItem {
     let type: MediaType
     private let imageLoader: @Sendable () async -> PlatformImage?
     private let caption: String?
+    private let animatedDuration: TimeInterval?
 
-    init(id: UUID = UUID(), imageLoader: @escaping @Sendable () async -> PlatformImage?, caption: String? = nil, type: MediaType = .image) {
+    init(id: UUID = UUID(), imageLoader: @escaping @Sendable () async -> PlatformImage?, caption: String? = nil, type: MediaType = .image, animatedDuration: TimeInterval? = nil) {
         self.id = id
         self.type = type
         self.imageLoader = imageLoader
         self.caption = caption
+        self.animatedDuration = animatedDuration
     }
 
     func loadImage() async -> PlatformImage? {
@@ -980,7 +1026,7 @@ fileprivate struct PreviewImageMediaItem: MediaItem {
     }
 
     func getAnimatedImageDuration() async -> TimeInterval? {
-        nil
+        animatedDuration
     }
 
     func getVideoDuration() async -> TimeInterval? {
@@ -997,6 +1043,52 @@ fileprivate struct PreviewImageMediaItem: MediaItem {
 
     func hasAudioTrack() async -> Bool {
         false
+    }
+}
+
+/// Preview video media item
+fileprivate struct PreviewVideoMediaItem: MediaItem {
+    let id: UUID
+    let type: MediaType = .video
+    private let videoURL: URL
+    private let thumbnailLoader: @Sendable () async -> PlatformImage?
+    private let caption: String?
+    private let duration: TimeInterval?
+
+    init(id: UUID = UUID(), videoURL: URL, thumbnailLoader: @escaping @Sendable () async -> PlatformImage?, caption: String? = nil, duration: TimeInterval? = nil) {
+        self.id = id
+        self.videoURL = videoURL
+        self.thumbnailLoader = thumbnailLoader
+        self.caption = caption
+        self.duration = duration
+    }
+
+    func loadImage() async -> PlatformImage? {
+        await thumbnailLoader()
+    }
+
+    func loadVideoURL() async -> URL? {
+        videoURL
+    }
+
+    func getAnimatedImageDuration() async -> TimeInterval? {
+        nil
+    }
+
+    func getVideoDuration() async -> TimeInterval? {
+        duration
+    }
+
+    func getShareableItem() async -> Any? {
+        videoURL
+    }
+
+    func getCaption() async -> String? {
+        caption
+    }
+
+    func hasAudioTrack() async -> Bool {
+        true
     }
 }
 
@@ -1020,9 +1112,8 @@ fileprivate struct PreviewMediaItems {
     static func createComprehensiveTestMedia() -> [any MediaItem] {
         var items: [any MediaItem] = []
 
-        print("📁 [MediaGalleryView] Creating preview items with captions")
+        print("📁 [MediaGalleryView] Creating preview items with all media types")
 
-        // Fill to 20 items with generated colored images with captions
         let colors: [(Color, String)] = [
             (.red, "Red"),
             (.blue, "Blue"),
@@ -1040,26 +1131,82 @@ fileprivate struct PreviewMediaItems {
 
         let samplePrompts: [String] = PreviewMediaItems.samplePrompts
 
+        // Sample video URLs (Big Buck Bunny - public domain)
+        let sampleVideoURLs: [(URL, TimeInterval)] = [
+            (URL(string: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")!, 596.0),
+            (URL(string: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4")!, 653.0),
+            (URL(string: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4")!, 887.0),
+            (URL(string: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4")!, 734.0)
+        ]
+
+        // Sample animated GIF URLs (public domain / creative commons)
+        let sampleAnimatedGIFs: [(URL, TimeInterval)] = [
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcDd2OWRyMnNhMzVkOWt0N2RjZnNhNjN3NnV3OXBwNHo2ZGtvbWhueSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7aCSPqXE5C6T8tBC/giphy.gif")!, 2.0),
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExYzRlMjM5NzY0MzdiYjhhZTgzMjJlMjBiOWE4OWRjMmM2YTk0OTYwNyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/l0HlBO7eyXzSZkJri/giphy.gif")!, 1.5),
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNDhiMzYxMjU0ZjJkNjM5ZDE5NWY2ZWE3NTg1MTBiMzM5MjNlNDIwMyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/xT9IgzoKnwFNmISR8I/giphy.gif")!, 2.5),
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNmI1YzI2ZjY5ZDgzODdjMjE5MzE1MzY1YjhlMTBiMDNjZjQyZDE5MSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3oEjI6SIIHBdRxXI40/giphy.gif")!, 1.0)
+        ]
+
         let targetCount = 20
         var colorIndex = 0
+        var videoIndex = 0
+        var gifIndex = 0
+
         while items.count < targetCount {
-            let (color, colorName) = colors[colorIndex % colors.count]
+            let (color, _) = colors[colorIndex % colors.count]
             let itemNumber = items.count + 1
             let promptIndex = items.count % samplePrompts.count
             let prompt = samplePrompts[promptIndex]
 
-            let item = PreviewImageMediaItem(
-                id: UUID(),
-                imageLoader: {
-                    await PreviewMediaItems.generateColorImage(color: color, text: "#\(itemNumber)")
-                },
-                caption: "\(prompt)\n\nModel: DALL-E 3"
-            )
-            items.append(item)
+            // Mix of media types: every 7th is video, every 5th is animated GIF, rest are static images
+            if itemNumber % 7 == 0 && videoIndex < sampleVideoURLs.count {
+                // Video item
+                let (videoURL, duration) = sampleVideoURLs[videoIndex]
+                let capturedColor = color
+                let capturedItemNumber = itemNumber
+                let item = PreviewVideoMediaItem(
+                    id: UUID(),
+                    videoURL: videoURL,
+                    thumbnailLoader: {
+                        await PreviewMediaItems.generateVideoThumbnail(color: capturedColor, text: "🎬 #\(capturedItemNumber)")
+                    },
+                    caption: "Sample Video #\(videoIndex + 1)\n\n\(prompt)",
+                    duration: duration
+                )
+                items.append(item)
+                videoIndex += 1
+            } else if itemNumber % 5 == 0 && gifIndex < sampleAnimatedGIFs.count {
+                // Real animated GIF from URL
+                let (gifURL, duration) = sampleAnimatedGIFs[gifIndex]
+                let capturedGifIndex = gifIndex
+                let item = PreviewImageMediaItem(
+                    id: UUID(),
+                    imageLoader: {
+                        await PreviewMediaItems.loadAnimatedGIF(from: gifURL)
+                    },
+                    caption: "Animated GIF #\(capturedGifIndex + 1)\n\n\(prompt)",
+                    type: .animatedImage,
+                    animatedDuration: duration
+                )
+                items.append(item)
+                gifIndex += 1
+            } else {
+                // Static image item
+                let capturedColor = color
+                let capturedItemNumber = itemNumber
+                let item = PreviewImageMediaItem(
+                    id: UUID(),
+                    imageLoader: {
+                        await PreviewMediaItems.generateColorImage(color: capturedColor, text: "#\(capturedItemNumber)")
+                    },
+                    caption: "\(prompt)\n\nModel: DALL-E 3"
+                )
+                items.append(item)
+            }
             colorIndex += 1
         }
 
-        print("✅ [MediaGalleryView] Created \(items.count) preview items with captions")
+        print("✅ [MediaGalleryView] Created \(items.count) preview items (images, animated, videos)")
 
         return items
     }
@@ -1102,6 +1249,214 @@ fileprivate struct PreviewMediaItems {
         let textRect = CGRect(
             x: (size.width - textSize.width) / 2,
             y: (size.height - textSize.height) / 2,
+            width: textSize.width,
+            height: textSize.height
+        )
+        (text as NSString).draw(in: textRect, withAttributes: attributes)
+
+        image.unlockFocus()
+        return image
+        #endif
+    }
+
+    /// Load an animated GIF from a URL
+    static func loadAnimatedGIF(from url: URL) async -> PlatformImage? {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            #if canImport(UIKit)
+            return UIImage.animatedImageWithAnimatedGIFData(data)
+            #elseif canImport(AppKit)
+            return NSImage(data: data)
+            #endif
+        } catch {
+            print("⚠️ Failed to load animated GIF from \(url): \(error)")
+            return nil
+        }
+    }
+
+    /// Generate an animated image (simulated with multi-frame UIImage/NSImage)
+    @MainActor
+    static func generateAnimatedImage(color: Color, text: String) -> PlatformImage {
+        let size = CGSize(width: 800, height: 600)
+        let frameCount = 8
+        var frames: [PlatformImage] = []
+
+        // Create frames with varying brightness/saturation for animation effect
+        for i in 0..<frameCount {
+            let progress = Double(i) / Double(frameCount)
+            let adjustedColor = color.opacity(0.5 + 0.5 * sin(progress * .pi * 2))
+
+            #if canImport(UIKit)
+            let renderer = UIGraphicsImageRenderer(size: size)
+            let frame = renderer.image { context in
+                // Background with gradient effect
+                UIColor(adjustedColor).setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+
+                // Draw animated circle
+                let circleRadius: CGFloat = 100
+                let centerX = size.width / 2 + CGFloat(sin(progress * .pi * 2)) * 150
+                let centerY = size.height / 2 + CGFloat(cos(progress * .pi * 2)) * 100
+                UIColor.white.withAlphaComponent(0.8).setFill()
+                context.cgContext.fillEllipse(in: CGRect(
+                    x: centerX - circleRadius,
+                    y: centerY - circleRadius,
+                    width: circleRadius * 2,
+                    height: circleRadius * 2
+                ))
+
+                // Draw text
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 80, weight: .bold),
+                    .foregroundColor: UIColor.white
+                ]
+                let textSize = (text as NSString).size(withAttributes: attributes)
+                let textRect = CGRect(
+                    x: (size.width - textSize.width) / 2,
+                    y: (size.height - textSize.height) / 2,
+                    width: textSize.width,
+                    height: textSize.height
+                )
+                (text as NSString).draw(in: textRect, withAttributes: attributes)
+            }
+            frames.append(frame)
+            #elseif canImport(AppKit)
+            let frame = NSImage(size: size)
+            frame.lockFocus()
+
+            NSColor(adjustedColor).setFill()
+            NSRect(origin: .zero, size: size).fill()
+
+            // Draw animated circle
+            let circleRadius: CGFloat = 100
+            let centerX = size.width / 2 + CGFloat(sin(progress * .pi * 2)) * 150
+            let centerY = size.height / 2 + CGFloat(cos(progress * .pi * 2)) * 100
+            NSColor.white.withAlphaComponent(0.8).setFill()
+            let circlePath = NSBezierPath(ovalIn: NSRect(
+                x: centerX - circleRadius,
+                y: centerY - circleRadius,
+                width: circleRadius * 2,
+                height: circleRadius * 2
+            ))
+            circlePath.fill()
+
+            // Draw text
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 80, weight: .bold),
+                .foregroundColor: NSColor.white
+            ]
+            let textSize = (text as NSString).size(withAttributes: attributes)
+            let textRect = CGRect(
+                x: (size.width - textSize.width) / 2,
+                y: (size.height - textSize.height) / 2,
+                width: textSize.width,
+                height: textSize.height
+            )
+            (text as NSString).draw(in: textRect, withAttributes: attributes)
+
+            frame.unlockFocus()
+            frames.append(frame)
+            #endif
+        }
+
+        #if canImport(UIKit)
+        // Create animated UIImage
+        return UIImage.animatedImage(with: frames, duration: 2.0) ?? frames[0]
+        #elseif canImport(AppKit)
+        // For macOS, return single frame (NSImage doesn't have built-in animation support like UIImage)
+        // The animation will be handled by the AnimatedImageView
+        return frames[0]
+        #endif
+    }
+
+    /// Generate a video thumbnail placeholder
+    @MainActor
+    static func generateVideoThumbnail(color: Color, text: String) -> PlatformImage {
+        let size = CGSize(width: 800, height: 600)
+
+        #if canImport(UIKit)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { context in
+            // Dark gradient background
+            UIColor(color).withAlphaComponent(0.7).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+
+            // Draw play button circle
+            let playButtonSize: CGFloat = 120
+            let playButtonRect = CGRect(
+                x: (size.width - playButtonSize) / 2,
+                y: (size.height - playButtonSize) / 2 - 30,
+                width: playButtonSize,
+                height: playButtonSize
+            )
+            UIColor.white.withAlphaComponent(0.9).setFill()
+            context.cgContext.fillEllipse(in: playButtonRect)
+
+            // Draw play triangle
+            UIColor(color).setFill()
+            let trianglePath = UIBezierPath()
+            let triCenterX = playButtonRect.midX + 5
+            let triCenterY = playButtonRect.midY
+            let triSize: CGFloat = 35
+            trianglePath.move(to: CGPoint(x: triCenterX - triSize * 0.4, y: triCenterY - triSize))
+            trianglePath.addLine(to: CGPoint(x: triCenterX - triSize * 0.4, y: triCenterY + triSize))
+            trianglePath.addLine(to: CGPoint(x: triCenterX + triSize * 0.8, y: triCenterY))
+            trianglePath.close()
+            trianglePath.fill()
+
+            // Draw text
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 60, weight: .bold),
+                .foregroundColor: UIColor.white
+            ]
+            let textSize = (text as NSString).size(withAttributes: attributes)
+            let textRect = CGRect(
+                x: (size.width - textSize.width) / 2,
+                y: size.height - 120,
+                width: textSize.width,
+                height: textSize.height
+            )
+            (text as NSString).draw(in: textRect, withAttributes: attributes)
+        }
+        #elseif canImport(AppKit)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        NSColor(color).withAlphaComponent(0.7).setFill()
+        NSRect(origin: .zero, size: size).fill()
+
+        // Draw play button circle
+        let playButtonSize: CGFloat = 120
+        let playButtonRect = NSRect(
+            x: (size.width - playButtonSize) / 2,
+            y: (size.height - playButtonSize) / 2 + 30,
+            width: playButtonSize,
+            height: playButtonSize
+        )
+        NSColor.white.withAlphaComponent(0.9).setFill()
+        NSBezierPath(ovalIn: playButtonRect).fill()
+
+        // Draw play triangle
+        NSColor(color).setFill()
+        let trianglePath = NSBezierPath()
+        let triCenterX = playButtonRect.midX + 5
+        let triCenterY = playButtonRect.midY
+        let triSize: CGFloat = 35
+        trianglePath.move(to: NSPoint(x: triCenterX - triSize * 0.4, y: triCenterY - triSize))
+        trianglePath.line(to: NSPoint(x: triCenterX - triSize * 0.4, y: triCenterY + triSize))
+        trianglePath.line(to: NSPoint(x: triCenterX + triSize * 0.8, y: triCenterY))
+        trianglePath.close()
+        trianglePath.fill()
+
+        // Draw text
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 60, weight: .bold),
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = (text as NSString).size(withAttributes: attributes)
+        let textRect = CGRect(
+            x: (size.width - textSize.width) / 2,
+            y: 60,
             width: textSize.width,
             height: textSize.height
         )

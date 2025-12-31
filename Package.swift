@@ -16,11 +16,15 @@ let package = Package(
             targets: ["MediaStream"]
         ),
     ],
+    dependencies: [
+        // No external dependencies - uses native AVFoundation + WKWebView for video support
+    ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "MediaStream"
+            name: "MediaStream",
+            dependencies: []
         ),
         .testTarget(
             name: "MediaStreamTests",

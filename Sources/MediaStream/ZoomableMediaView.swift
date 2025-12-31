@@ -14,36 +14,113 @@ struct AnimatedImageView: View {
     let offset: CGSize
 
     var body: some View {
-        #if canImport(UIKit)
-        AnimatedImageRepresentable(image: image)
-            .scaleEffect(scale)
-            .offset(offset)
-        #elseif canImport(AppKit)
-        AnimatedImageRepresentable(image: image)
-            .scaleEffect(scale)
-            .offset(offset)
-        #endif
+        GeometryReader { geometry in
+            #if canImport(UIKit)
+            AnimatedImageRepresentable(image: image, containerSize: geometry.size)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                .allowsHitTesting(false)  // Pass gestures through to parent
+            #elseif canImport(AppKit)
+            AnimatedImageRepresentable(image: image, containerSize: geometry.size)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                .allowsHitTesting(false)  // Pass gestures through to parent
+            #endif
+        }
+        .contentShape(Rectangle())  // Make entire area tappable for gestures
+        .scaleEffect(scale)
+        .offset(offset)
     }
 }
 
 #if canImport(UIKit)
 struct AnimatedImageRepresentable: UIViewRepresentable {
     let image: UIImage
+    let containerSize: CGSize
 
-    func makeUIView(context: Context) -> UIImageView {
+    func makeUIView(context: Context) -> UIView {
+        // Use a container view to ensure proper layout
+        let container = UIView()
+        container.backgroundColor = .clear
+        container.clipsToBounds = true
+
         let imageView = UIImageView()
-        imageView.contentMode = .scaleAspectFit
+        imageView.contentMode = .scaleAspectFit  // Always fit within bounds
+        imageView.clipsToBounds = true
+        imageView.backgroundColor = .clear
+        imageView.isUserInteractionEnabled = false  // Allow gestures to pass through to SwiftUI
+        imageView.tag = 100  // Tag to find it later
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(imageView)
+
+        // Constrain imageView to fill container
+        NSLayoutConstraint.activate([
+            imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            imageView.topAnchor.constraint(equalTo: container.topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
         imageView.image = image
-        return imageView
+        // Start animation if this is an animated image
+        if image.images != nil {
+            imageView.animationImages = image.images
+            imageView.animationDuration = image.duration
+            imageView.startAnimating()
+        }
+        return container
     }
 
-    func updateUIView(_ uiView: UIImageView, context: Context) {
-        uiView.image = image
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard let imageView = uiView.viewWithTag(100) as? UIImageView else { return }
+
+        // Update image if changed
+        if imageView.image !== image {
+            imageView.image = image
+            imageView.animationImages = image.images
+            imageView.animationDuration = image.duration
+        }
+
+        // Always ensure animation is running if this is an animated image
+        // This handles the case where we swipe back to this view
+        if image.images != nil && !imageView.isAnimating {
+            imageView.startAnimating()
+        }
+    }
+
+    /// Clean up animation memory when view is removed from hierarchy
+    static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
+        if let imageView = uiView.viewWithTag(100) as? UIImageView {
+            imageView.stopAnimating()
+            imageView.animationImages = nil  // Release all frames from memory
+            imageView.image = nil
+        }
+    }
+}
+
+/// UIViewRepresentable wrapper for StreamingAnimatedImageView (memory-efficient large GIFs)
+struct StreamingAnimatedImageRepresentable: UIViewRepresentable {
+    let url: URL
+    let containerSize: CGSize
+
+    func makeUIView(context: Context) -> StreamingAnimatedImageView {
+        let view = StreamingAnimatedImageView()
+        view.backgroundColor = .clear
+        view.loadImage(from: url)
+        return view
+    }
+
+    func updateUIView(_ uiView: StreamingAnimatedImageView, context: Context) {
+        // URL changes are handled by parent view recreating this view
+    }
+
+    static func dismantleUIView(_ uiView: StreamingAnimatedImageView, coordinator: ()) {
+        uiView.stopAnimating()
     }
 }
 #elseif canImport(AppKit)
 struct AnimatedImageRepresentable: NSViewRepresentable {
     let image: NSImage
+    let containerSize: CGSize
 
     func makeNSView(context: Context) -> NSImageView {
         let imageView = NSImageView()
@@ -55,8 +132,11 @@ struct AnimatedImageRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSImageView, context: Context) {
-        nsView.image = image
+        if nsView.image !== image {
+            nsView.image = image
+        }
         nsView.animates = true
+        nsView.frame = CGRect(origin: .zero, size: containerSize)
     }
 }
 #endif
@@ -80,6 +160,8 @@ struct CustomVideoPlayerView: View {
     @State private var timeObserver: Any?
     @State private var endTimeObserver: NSObjectProtocol?
     @State private var showVolumeSlider = false
+    @State private var scrubPosition: Double = 0
+    @State private var volumeCollapseTimer: Timer?
 
     // Persist volume preference across media items
     @AppStorage("MediaStream_VideoVolume") private var volume: Double = 1.0
@@ -115,17 +197,32 @@ struct CustomVideoPlayerView: View {
                         }
                         .buttonStyle(.plain)
 
-                        Text(formatTime(currentTime))
+                        Text(formatTime(isDragging ? scrubPosition : currentTime))
                             .font(.caption)
                             .foregroundColor(.white)
                             .monospacedDigit()
 
-                        Slider(value: $currentTime, in: 0...max(duration, 0.1)) { editing in
-                            isDragging = editing
-                            if !editing {
-                                seekTo(currentTime)
+                        Slider(
+                            value: Binding(
+                                get: { isDragging ? scrubPosition : currentTime },
+                                set: { newValue in
+                                    scrubPosition = newValue
+                                }
+                            ),
+                            in: 0...max(duration, 0.1),
+                            onEditingChanged: { editing in
+                                if editing {
+                                    // Starting to drag - capture current position
+                                    scrubPosition = currentTime
+                                    MediaControlsInteractionState.shared.isInteracting = true
+                                } else {
+                                    // Finished dragging - seek to scrub position
+                                    seekTo(scrubPosition)
+                                    MediaControlsInteractionState.shared.isInteracting = false
+                                }
+                                isDragging = editing
                             }
-                        }
+                        )
                         .tint(.white)
 
                         Text(formatTime(duration))
@@ -138,8 +235,11 @@ struct CustomVideoPlayerView: View {
                             // Volume slider (expandable)
                             if showVolumeSlider {
                                 Slider(value: $volume, in: 0...1) { editing in
-                                    if !editing {
+                                    if editing {
+                                        resetVolumeCollapseTimer()
+                                    } else {
                                         applyVolume()
+                                        resetVolumeCollapseTimer()
                                     }
                                 }
                                 .frame(width: 80)
@@ -150,6 +250,7 @@ struct CustomVideoPlayerView: View {
                                         isMuted = false
                                         player.isMuted = false
                                     }
+                                    resetVolumeCollapseTimer()
                                 }
                             }
 
@@ -157,10 +258,12 @@ struct CustomVideoPlayerView: View {
                             Button(action: {
                                 if showVolumeSlider {
                                     toggleMute()
+                                    resetVolumeCollapseTimer()
                                 } else {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         showVolumeSlider = true
                                     }
+                                    resetVolumeCollapseTimer()
                                 }
                             }) {
                                 ZStack {
@@ -192,8 +295,10 @@ struct CustomVideoPlayerView: View {
                             }
                         }
                     }
+                    .blockParentGestures()
                 }
                 .transition(.opacity)
+                .allowsHitTesting(true)
             }
         }
         .onAppear {
@@ -208,24 +313,18 @@ struct CustomVideoPlayerView: View {
                 let currentPos = CMTimeGetSeconds(player.currentTime())
                 let isAtEnd = duration > 0 && currentPos >= duration - 1.0
 
-                print("🎬 Slideshow autoplay: position \(currentPos)s of \(duration)s")
-
                 if isAtEnd {
-                    print("🎬 Video at end - resetting before playing")
                     currentTime = 0.0
                     savedPosition = 0.0
                     wasAtEnd = false
 
-                    // Simple seek to beginning
                     player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                         Task { @MainActor in
                             self.player.play()
                             self.isPlaying = true
-                            print("🎬 Reset complete, now playing")
                         }
                     }
                 } else {
-                    // Just play from current position
                     player.play()
                     isPlaying = true
                 }
@@ -237,8 +336,6 @@ struct CustomVideoPlayerView: View {
         .onChange(of: videoLoopCount) { oldValue, newValue in
             // When loop count increments, restart the video
             if newValue > oldValue && shouldAutoplay {
-                print("📹 Loop count increased to \(newValue) - restarting video")
-                // Reset and play from beginning
                 player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                     Task { @MainActor in
                         self.currentTime = 0.0
@@ -246,7 +343,6 @@ struct CustomVideoPlayerView: View {
                         self.wasAtEnd = false
                         self.player.play()
                         self.isPlaying = true
-                        print("📹 Video restarted for loop #\(newValue)")
                     }
                 }
             }
@@ -254,19 +350,14 @@ struct CustomVideoPlayerView: View {
         .onChange(of: isCurrentSlide) { oldValue, newValue in
             // When this video becomes the current slide, just reset if at end
             if newValue && !oldValue {
-                print("📹 Video became current slide")
-
-                // Check if video is at end
                 let currentPos = CMTimeGetSeconds(player.currentTime())
                 let isAtEnd = wasAtEnd || (duration > 0 && currentPos >= duration - 1.0)
 
                 if isAtEnd {
-                    print("📹 Video at end - resetting to beginning")
                     currentTime = 0.0
                     savedPosition = 0.0
                     wasAtEnd = false
 
-                    // Simple seek to beginning
                     player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
                         Task { @MainActor in
                             if self.shouldAutoplay {
@@ -290,7 +381,7 @@ struct CustomVideoPlayerView: View {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
-            print("⚠️ Failed to configure audio session: \(error)")
+            // Audio session configuration failed
         }
         #endif
 
@@ -306,13 +397,12 @@ struct CustomVideoPlayerView: View {
             }
         }
 
-        // Setup observers - simple and clean
+        // Setup observers
         setupObservers()
 
         // Check if we need to reset from end position
         let currentPos = CMTimeGetSeconds(player.currentTime())
         if wasAtEnd || (duration > 0 && currentPos >= duration - 1.0) {
-            print("📹 Video at end in setupPlayer - resetting")
             currentTime = 0.0
             savedPosition = 0.0
             wasAtEnd = false
@@ -327,7 +417,7 @@ struct CustomVideoPlayerView: View {
     }
 
     private func setupObservers() {
-        // CRITICAL: Clean up any existing observers first to prevent duplicates
+        // Clean up any existing observers first to prevent duplicates
         if let observer = timeObserver {
             player.removeTimeObserver(observer)
             timeObserver = nil
@@ -336,8 +426,6 @@ struct CustomVideoPlayerView: View {
             NotificationCenter.default.removeObserver(observer)
             endTimeObserver = nil
         }
-
-        print("📹 Creating new observers")
 
         // Add periodic time observer
         let observer = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { time in
@@ -366,61 +454,34 @@ struct CustomVideoPlayerView: View {
         timeObserver = observer
 
         // Handle video completion - only if we don't already have an observer
-        guard endTimeObserver == nil else {
-            print("📹 End observer already exists - not creating duplicate")
-            return
-        }
-
-        guard let currentItem = player.currentItem else {
-            print("⚠️ Cannot create end observer - no current item")
-            return
-        }
-
-        print("📹 Creating ONE end observer for item: \(ObjectIdentifier(currentItem))")
+        guard endTimeObserver == nil else { return }
+        guard let currentItem = player.currentItem else { return }
 
         let endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: currentItem,
             queue: .main
         ) { notification in
-            // Extract the notification object before entering Task
             let notificationItem = notification.object as? AVPlayerItem
 
             Task { @MainActor in
-                print("🎬 Video completed playback notification received")
-
                 // Verify this is for our current player item
                 guard let notificationItem = notificationItem,
                       notificationItem == self.player.currentItem else {
-                    print("🎬 Ignoring - notification for different item")
                     return
                 }
 
                 // Verify video actually reached the end
                 let currentPos = CMTimeGetSeconds(self.player.currentTime())
-
-                // Be VERY strict - must be within 0.1 seconds of the end
                 let isAtEnd = self.duration > 0 && currentPos >= (self.duration - 0.1)
 
-                if !isAtEnd {
-                    print("🎬 REJECTING spurious completion - at \(currentPos)s but duration is \(self.duration)s")
-                    return
-                }
+                guard isAtEnd else { return }
 
-                print("🎬 VALID completion at \(currentPos)s of \(self.duration)s")
                 self.wasAtEnd = true
-
-                // Call completion callback ONCE
-                if let callback = self.onVideoComplete {
-                    print("🎬 Calling onVideoComplete callback")
-                    callback()
-                } else {
-                    print("🎬 No callback registered")
-                }
+                self.onVideoComplete?()
             }
         }
         endTimeObserver = endObserver
-        print("📹 End observer created successfully")
     }
 
     private func cleanupPlayer() {
@@ -436,6 +497,10 @@ struct CustomVideoPlayerView: View {
             endTimeObserver = nil
         }
 
+        // Cancel volume collapse timer
+        volumeCollapseTimer?.invalidate()
+        volumeCollapseTimer = nil
+
         // Pause playback
         player.pause()
     }
@@ -444,15 +509,13 @@ struct CustomVideoPlayerView: View {
         if isPlaying {
             player.pause()
         } else {
-            // If video is at or near the end (within 1 second), restart from beginning
+            // If video is at or near the end, restart from beginning
             if duration > 0 && currentTime >= duration - 1.0 {
-                print("▶️ Video at end, restarting from beginning")
                 player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
                 currentTime = 0.0
                 savedPosition = 0.0
             }
             player.play()
-            // Clear wasAtEnd flag when user manually plays
             wasAtEnd = false
         }
         isPlaying.toggle()
@@ -482,6 +545,17 @@ struct CustomVideoPlayerView: View {
     private func applyVolume() {
         player.volume = Float(volume)
         player.isMuted = isMuted
+    }
+
+    private func resetVolumeCollapseTimer() {
+        volumeCollapseTimer?.invalidate()
+        volumeCollapseTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { _ in
+            Task { @MainActor in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showVolumeSlider = false
+                }
+            }
+        }
     }
 
     private func seekTo(_ time: Double) {
@@ -633,6 +707,36 @@ class PlayerView: NSView {
 }
 #endif
 
+/// ViewModifier for conditionally applying double-tap zoom gesture
+private struct DoubleTapZoomModifier: ViewModifier {
+    let isEnabled: Bool
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.highPriorityGesture(
+                TapGesture(count: 2)
+                    .onEnded { _ in action() }
+            )
+        } else {
+            content
+        }
+    }
+}
+
+/// Extension to conditionally apply pan gesture only when zoomed
+/// This prevents blocking parent swipe gestures when not zoomed
+extension View {
+    @ViewBuilder
+    func applyPanGesture<G: Gesture>(if condition: Bool, gesture: G) -> some View {
+        if condition {
+            self.simultaneousGesture(gesture)
+        } else {
+            self
+        }
+    }
+}
+
 /// A view that displays a single media item with zoom and pan support
 struct ZoomableMediaView: View {
     let mediaItem: any MediaItem
@@ -645,16 +749,19 @@ struct ZoomableMediaView: View {
 
     @State private var image: PlatformImage?
     @State private var videoURL: URL?
+    @State private var animatedImageURL: URL?  // For streaming large GIFs
+    @State private var useStreaming: Bool = false  // Whether to use streaming for this animated image
     @State private var isLoading = false  // Start false, only true when actively loading
     @State private var isLoadingMedia = false  // Flag to prevent concurrent loading
     @State private var scale: CGFloat = 1.0
     @State private var lastScale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
+    @State private var dragStartOffset: CGSize = .zero  // Offset when drag started
     @State private var videoPlayer: AVPlayer?
     @State private var savedVideoPosition: Double = 0.0
     @State private var videoWasAtEnd: Bool = false
-    @State private var hasLoadedMedia: Bool = false  // Track if media has been loaded
+    @State private var hasLoadedMedia: Bool = false
+    @StateObject private var videoController = WebViewVideoController()
 
     private let minScale: CGFloat = 1.0
     private let maxScale: CGFloat = 4.0
@@ -664,15 +771,35 @@ struct ZoomableMediaView: View {
             ZStack {
                 Color.black
 
-                if isLoading && image == nil && videoURL == nil {
+                if isLoading && image == nil && videoURL == nil && animatedImageURL == nil {
                     ProgressView()
                         .scaleEffect(1.5)
                         .tint(.white)
                 } else {
                     Group {
-                        if mediaItem.type == .animatedImage, let image = image {
-                            AnimatedImageView(image: image, scale: scale, offset: offset)
-                                .gesture(createGestures(in: geometry))
+                        if mediaItem.type == .animatedImage {
+                            #if canImport(UIKit)
+                            if useStreaming, let url = animatedImageURL {
+                                // Use streaming view for large GIFs (memory-efficient)
+                                StreamingAnimatedImageRepresentable(url: url, containerSize: geometry.size)
+                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                                    .scaleEffect(scale)
+                                    .offset(offset)
+                                    .gesture(createMagnificationGesture(in: geometry))
+                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                            } else if let image = image {
+                                // Use regular animated image view for small GIFs
+                                AnimatedImageView(image: image, scale: scale, offset: offset)
+                                    .gesture(createMagnificationGesture(in: geometry))
+                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                            }
+                            #else
+                            if let image = image {
+                                AnimatedImageView(image: image, scale: scale, offset: offset)
+                                    .gesture(createMagnificationGesture(in: geometry))
+                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                            }
+                            #endif
                         } else if mediaItem.type == .image, let image = image {
                             #if canImport(UIKit)
                             Image(uiImage: image)
@@ -680,34 +807,38 @@ struct ZoomableMediaView: View {
                                 .scaledToFit()
                                 .scaleEffect(scale)
                                 .offset(offset)
-                                .gesture(createGestures(in: geometry))
+                                .gesture(createMagnificationGesture(in: geometry))
+                                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
                             #elseif canImport(AppKit)
                             Image(nsImage: image)
                                 .resizable()
                                 .scaledToFit()
                                 .scaleEffect(scale)
                                 .offset(offset)
-                                .gesture(createGestures(in: geometry))
+                                .gesture(createMagnificationGesture(in: geometry))
+                                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
                             #endif
-                        } else if mediaItem.type == .video, let player = videoPlayer {
-                            CustomVideoPlayerView(
-                                player: player,
-                                shouldAutoplay: isSlideshowPlaying,
-                                showControls: showControls,
-                                isCurrentSlide: isCurrentSlide,
-                                videoLoopCount: videoLoopCount,
-                                onVideoComplete: onVideoComplete,
-                                savedPosition: $savedVideoPosition,
-                                wasAtEnd: $videoWasAtEnd
-                            )
                         } else if mediaItem.type == .video {
-                            // Video type but no player - show error
-                            VStack {
-                                Image(systemName: "exclamationmark.triangle")
-                                    .font(.largeTitle)
-                                    .foregroundColor(.white)
-                                Text("Video failed to load")
-                                    .foregroundColor(.white)
+                            // Use WebView player for all videos (WebM/MP4 support via HTML5)
+                            // Always show the player (webview needs to be in hierarchy to load)
+                            ZStack {
+                                CustomWebViewVideoPlayerView(
+                                    controller: videoController,
+                                    shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                                    showControls: showControls && videoController.isReady,
+                                    hasAudio: true,
+                                    onVideoEnd: onVideoComplete
+                                )
+
+                                // Show loading overlay while video loads
+                                if !videoController.isReady {
+                                    Color.black
+                                    if isLoading || videoURL != nil {
+                                        ProgressView()
+                                            .scaleEffect(1.5)
+                                            .tint(.white)
+                                    }
+                                }
                             }
                         }
                     }
@@ -715,24 +846,82 @@ struct ZoomableMediaView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .highPriorityGesture(
-                TapGesture(count: 2)
-                    .onEnded { _ in
-                        handleDoubleTap(in: geometry)
-                    }
-            )
+            // Only allow double-tap zoom for images, not videos
+            .modifier(DoubleTapZoomModifier(
+                isEnabled: mediaItem.type != .video,
+                action: { handleDoubleTap(in: geometry) }
+            ))
         }
         .task(id: mediaItem.id) {
+            // Reset state when switching to a different media item
+            image = nil
+            videoURL = nil
+            animatedImageURL = nil
+            useStreaming = false
+            hasLoadedMedia = false
+            videoController.stop()
+
+            // Reset zoom state and notify parent
+            scale = 1.0
+            lastScale = 1.0
+            offset = .zero
+            onZoomChanged(false)
+
             await loadMedia()
+        }
+        .onChange(of: isCurrentSlide) { oldValue, newValue in
+            if mediaItem.type == .video {
+                if newValue && !oldValue {
+                    // When this slide becomes current (and wasn't before), show first frame for videos
+                    // Only if not in slideshow mode (slideshow will autoplay)
+                    if !isSlideshowPlaying && videoController.isReady {
+                        videoController.showFirstFrame()
+                    }
+                } else if !newValue && oldValue {
+                    // When navigating away from this slide, pause the video
+                    videoController.pause()
+                }
+            }
+        }
+        .onChange(of: isSlideshowPlaying) { oldValue, newValue in
+            // Handle slideshow start/stop for videos on the current slide
+            if mediaItem.type == .video && isCurrentSlide && videoController.isReady {
+                if newValue && !oldValue {
+                    // Slideshow started - play the video
+                    videoController.cancelFirstFrameMode()
+                    if videoController.didReachEnd {
+                        videoController.seekToBeginning()
+                        videoController.didReachEnd = false
+                    }
+                    videoController.play()
+                } else if !newValue && oldValue {
+                    // Slideshow stopped - pause the video
+                    videoController.pause()
+                }
+            }
         }
         .onChange(of: scale) { _, newScale in
             onZoomChanged(newScale > minScale)
+        }
+        .onDisappear {
+            // Critical: Release memory when view disappears to prevent OOM
+            // Clear image/video/animated image state
+            image = nil
+            videoURL = nil
+            animatedImageURL = nil
+            useStreaming = false
+            hasLoadedMedia = false
+
+            // Fully destroy video controller to release WKWebView memory
+            videoController.destroy()
+
+            print("ZoomableMediaView: Cleaned up resources for \(mediaItem.id)")
         }
     }
 
     private func loadMedia() async {
         // Don't reload if already loaded
-        if hasLoadedMedia || image != nil || videoURL != nil {
+        if hasLoadedMedia || image != nil || videoURL != nil || animatedImageURL != nil {
             return
         }
 
@@ -749,45 +938,115 @@ struct ZoomableMediaView: View {
             isLoadingMedia = false
         }
 
-        do {
-            switch mediaItem.type {
-            case .image, .animatedImage:
-                if let loadedImage = await mediaItem.loadImage() {
-                    image = loadedImage
+        switch mediaItem.type {
+        case .image:
+            if let loadedImage = await mediaItem.loadImage() {
+                image = loadedImage
+                hasLoadedMedia = true
+            }
+        case .animatedImage:
+            #if canImport(UIKit)
+            // Check if we can use streaming (memory-efficient for large GIFs)
+            // First try URL, then try Data
+            if let url = await mediaItem.loadAnimatedImageURL() {
+                let frameCount = AnimatedImageHelper.getFrameCount(from: url)
+                print("ZoomableMediaView: Animated image (URL) has \(frameCount) frames")
+
+                if AnimatedImageHelper.requiresStreaming(frameCount: frameCount) {
+                    print("ZoomableMediaView: Using streaming for large GIF (\(frameCount) frames)")
+                    animatedImageURL = url
+                    useStreaming = true
                     hasLoadedMedia = true
                 } else {
-                    print("⚠️ Failed to load image for media item: \(mediaItem.id)")
+                    if let loadedImage = await mediaItem.loadImage() {
+                        image = loadedImage
+                        hasLoadedMedia = true
+                    }
                 }
-            case .video:
-                if let url = await mediaItem.loadVideoURL() {
-                    // Verify the file exists
-                    guard FileManager.default.fileExists(atPath: url.path) else {
-                        print("⚠️ Video file does not exist: \(url.path)")
-                        return
-                    }
+            } else if let data = await mediaItem.loadAnimatedImageData() {
+                // Have raw data - check frame count before creating full animated image
+                let frameCount = AnimatedImageHelper.getFrameCount(from: data)
+                print("ZoomableMediaView: Animated image (Data) has \(frameCount) frames")
 
-                    videoURL = url
+                if AnimatedImageHelper.requiresStreaming(frameCount: frameCount) {
+                    // Too many frames - create streaming view from data
+                    print("ZoomableMediaView: Using streaming for large GIF (\(frameCount) frames)")
+                    // Save data to temp file for streaming view
+                    let tempURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("streaming_\(UUID().uuidString).gif")
+                    try? data.write(to: tempURL)
+                    animatedImageURL = tempURL
+                    useStreaming = true
                     hasLoadedMedia = true
-                    await MainActor.run {
-                        videoPlayer = AVPlayer(url: url)
-                        print("✅ Created AVPlayer for video: \(url.lastPathComponent)")
-
-                        // IMMEDIATELY seek to zero to prevent loading at end position
-                        // This prevents AVPlayer from remembering last playback position
-                        videoPlayer?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-                        print("🔄 Force seeking to zero immediately after player creation")
-                    }
                 } else {
-                    print("⚠️ Failed to load video URL for media item: \(mediaItem.id)")
+                    // Small enough - create animated image
+                    if let animatedImage = AnimatedImageHelper.createAnimatedImage(from: data) {
+                        image = animatedImage
+                        hasLoadedMedia = true
+                    }
+                }
+            } else {
+                // No URL or Data available - fall back to loadImage()
+                // This may OOM for large GIFs, but it's the app's responsibility to provide URL/Data
+                if let loadedImage = await mediaItem.loadImage() {
+                    // Check if it's too large and show warning
+                    if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
+                        print("ZoomableMediaView: ⚠️ Large GIF (\(frames.count) frames) - implement loadAnimatedImageURL() or loadAnimatedImageData() to avoid OOM")
+                        // Show first frame only to reduce ongoing memory pressure
+                        image = frames.first ?? loadedImage
+                    } else {
+                        image = loadedImage
+                    }
+                    hasLoadedMedia = true
                 }
             }
-        } catch {
-            print("⚠️ Error loading media: \(error.localizedDescription)")
+            #else
+            // macOS doesn't need streaming (handles animated images differently)
+            if let loadedImage = await mediaItem.loadImage() {
+                image = loadedImage
+                hasLoadedMedia = true
+            }
+            #endif
+        case .video:
+            if let url = await mediaItem.loadVideoURL() {
+                // For local files, verify the file exists
+                if url.isFileURL {
+                    guard FileManager.default.fileExists(atPath: url.path) else { return }
+                }
+
+                videoURL = url
+                hasLoadedMedia = true
+
+                // Load video with WebView player (HTML5 video)
+                // Get headers from MediaStreamConfiguration for authenticated requests
+                let headers = await MediaStreamConfiguration.headersAsync(for: url)
+
+                await MainActor.run {
+                    // Create the webview first if needed
+                    if videoController.webView == nil {
+                        _ = videoController.createWebView()
+                    }
+                    videoController.load(url: url, headers: headers)
+                    // Show first frame immediately
+                    // Only do this if:
+                    // 1. Not autoplaying (slideshow will handle playback)
+                    // 2. This is the current slide (don't trigger for pre-rendered adjacent slides)
+                    if !isSlideshowPlaying && isCurrentSlide {
+                        // Wait a bit for video to be ready before showing first frame
+                        Task {
+                            try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+                            if videoController.isReady {
+                                videoController.showFirstFrame()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    private func createGestures(in geometry: GeometryProxy) -> some Gesture {
-        let magnification = MagnificationGesture()
+    private func createMagnificationGesture(in geometry: GeometryProxy) -> some Gesture {
+        MagnificationGesture()
             .onChanged { value in
                 let delta = value / lastScale
                 lastScale = value
@@ -799,42 +1058,48 @@ struct ZoomableMediaView: View {
                     withAnimation(.easeOut(duration: 0.3)) {
                         scale = minScale
                         offset = .zero
-                        lastOffset = .zero
                     }
                 } else {
                     // Smoothly slide back to constrained bounds
                     withAnimation(.easeOut(duration: 0.3)) {
                         offset = constrainOffset(offset, in: geometry)
-                        lastOffset = offset
                     }
                 }
             }
+    }
 
-        // Pan gesture with a small minimum distance to avoid conflicting with parent swipe
-        // Only actively pans when zoomed in
-        let drag = DragGesture(minimumDistance: 10)
+    private var isZoomedIn: Bool {
+        scale > minScale
+    }
+
+    private func panGesture(in geometry: GeometryProxy) -> some Gesture {
+        DragGesture(minimumDistance: 10)
             .onChanged { value in
-                // Only pan if zoomed in
-                // When not zoomed, this does nothing, allowing parent swipe gesture to work
-                if scale > minScale {
-                    // Allow dragging freely without constraints
-                    offset = CGSize(
-                        width: lastOffset.width + value.translation.width,
-                        height: lastOffset.height + value.translation.height
-                    )
-                }
-            }
-            .onEnded { _ in
-                if scale > minScale {
-                    // Smoothly slide back to constrained bounds when drag ends
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        offset = constrainOffset(offset, in: geometry)
-                        lastOffset = offset
-                    }
-                }
-            }
+                // Only pan when zoomed in
+                guard scale > minScale else { return }
 
-        return magnification.simultaneously(with: drag)
+                // On first change, capture the starting offset
+                if value.translation == .zero || (dragStartOffset == .zero && offset != .zero) {
+                    dragStartOffset = offset
+                }
+
+                // Update offset based on drag start + translation
+                offset = CGSize(
+                    width: dragStartOffset.width + value.translation.width,
+                    height: dragStartOffset.height + value.translation.height
+                )
+            }
+            .onEnded { value in
+                guard scale > minScale else { return }
+
+                // Reset drag start offset
+                dragStartOffset = .zero
+
+                // Smoothly slide back to constrained bounds when drag ends
+                withAnimation(.easeOut(duration: 0.3)) {
+                    offset = constrainOffset(offset, in: geometry)
+                }
+            }
     }
 
     private func constrainOffset(_ offset: CGSize, in geometry: GeometryProxy) -> CGSize {
@@ -858,23 +1123,17 @@ struct ZoomableMediaView: View {
     }
 
     private func handleDoubleTap(in geometry: GeometryProxy) {
-        print("👆 Double tap - current scale: \(scale), minScale: \(minScale)")
-
         withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
             // Use a threshold to detect if we're zoomed in (account for floating point precision)
             if scale > minScale + 0.01 {
                 // Zoom out
-                print("🔍 Zooming out to minScale")
                 scale = minScale
                 offset = .zero
-                lastOffset = .zero
             } else {
                 // Zoom in
-                print("🔍 Zooming in to 2.0")
                 scale = 2.0
                 // Constrain offset after zooming in
                 offset = constrainOffset(offset, in: geometry)
-                lastOffset = offset
             }
         }
     }

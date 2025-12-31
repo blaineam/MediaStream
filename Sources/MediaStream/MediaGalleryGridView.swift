@@ -57,6 +57,89 @@ public struct MediaGalleryMultiSelectAction: Identifiable {
     }
 }
 
+/// Combined grid + slideshow view that properly handles filter state
+/// Use this instead of separate MediaGalleryGridView + MediaGalleryView for automatic filter preservation
+public struct MediaGalleryFullView: View {
+    let mediaItems: [any MediaItem]
+    let configuration: MediaGalleryConfiguration
+    let filterConfig: MediaGalleryFilterConfig
+    let multiSelectActions: [MediaGalleryMultiSelectAction]
+    let includeBuiltInShareAction: Bool
+    let onDismiss: () -> Void
+
+    @State private var showSlideshow = false
+    @State private var slideshowItems: [any MediaItem] = []
+    @State private var selectedIndex: Int = 0
+    @State private var currentFilter: MediaFilter = .all
+    @State private var lastViewedIndex: Int = 0
+
+    public init(
+        mediaItems: [any MediaItem],
+        configuration: MediaGalleryConfiguration = MediaGalleryConfiguration(),
+        filterConfig: MediaGalleryFilterConfig = MediaGalleryFilterConfig(),
+        multiSelectActions: [MediaGalleryMultiSelectAction] = [],
+        includeBuiltInShareAction: Bool = true,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.mediaItems = mediaItems
+        self.configuration = configuration
+        self.filterConfig = filterConfig
+        self.multiSelectActions = multiSelectActions
+        self.includeBuiltInShareAction = includeBuiltInShareAction
+        self.onDismiss = onDismiss
+    }
+
+    public var body: some View {
+        ZStack {
+            // Grid view - always present but hidden when slideshow is shown
+            MediaGalleryGridView(
+                mediaItems: mediaItems,
+                configuration: configuration,
+                filterConfig: filterConfig,
+                multiSelectActions: multiSelectActions,
+                includeBuiltInShareAction: includeBuiltInShareAction,
+                initialScrollIndex: lastViewedIndex,
+                initialFilter: currentFilter,
+                onSelect: { _ in },
+                onSelectWithFilteredItems: { filteredItems, index in
+                    slideshowItems = filteredItems
+                    selectedIndex = index
+                    showSlideshow = true
+                },
+                onFilterChange: { filter in
+                    currentFilter = filter
+                },
+                onDismiss: onDismiss
+            )
+            .opacity(showSlideshow ? 0 : 1)
+
+            // Slideshow view - shown on top when active
+            if showSlideshow {
+                MediaGalleryView(
+                    mediaItems: slideshowItems,  // Use filtered items!
+                    initialIndex: selectedIndex,
+                    configuration: configuration,
+                    onDismiss: {
+                        showSlideshow = false
+                    },
+                    onBackToGrid: {
+                        showSlideshow = false
+                    },
+                    onIndexChange: { index in
+                        lastViewedIndex = index
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: showSlideshow)
+        #if os(iOS)
+        .navigationBarHidden(showSlideshow)
+        .toolbar(showSlideshow ? .hidden : .visible, for: .navigationBar)
+        #endif
+    }
+}
+
 /// Grid view for browsing and selecting media
 public struct MediaGalleryGridView: View {
     let mediaItems: [any MediaItem]
@@ -65,10 +148,15 @@ public struct MediaGalleryGridView: View {
     let multiSelectActions: [MediaGalleryMultiSelectAction]
     let includeBuiltInShareAction: Bool
     let initialScrollIndex: Int?
+    let initialFilter: MediaFilter
     let onSelect: (Int) -> Void
+    /// Callback with filtered items and index - use this when you need to respect filters in MediaGalleryView
+    let onSelectWithFilteredItems: (([any MediaItem], Int) -> Void)?
+    /// Callback when filter changes - use to preserve filter state across view recreations
+    let onFilterChange: ((MediaFilter) -> Void)?
     let onDismiss: () -> Void
 
-    @State private var selectedFilter: MediaFilter = .all
+    @State private var selectedFilter: MediaFilter
     @State private var filteredItems: [any MediaItem] = []
     @State private var videoDurations: [UUID: TimeInterval] = [:]
     @State private var videoHasAudio: [UUID: Bool] = [:]
@@ -80,10 +168,13 @@ public struct MediaGalleryGridView: View {
     @State private var hasMultipleMediaTypes = false
     @State private var visibleItemIds: Set<UUID> = []
     @State private var loadingItemIds: Set<UUID> = []
+    @State private var isRefreshing = false
+    @State private var refreshID = UUID()  // Changes to force thumbnail reload
 
     /// Number of items to preload around visible area
     private let preloadBuffer = 6
 
+    /// Backward-compatible init (without filter callback)
     public init(
         mediaItems: [any MediaItem],
         configuration: MediaGalleryConfiguration = MediaGalleryConfiguration(),
@@ -91,6 +182,7 @@ public struct MediaGalleryGridView: View {
         multiSelectActions: [MediaGalleryMultiSelectAction] = [],
         includeBuiltInShareAction: Bool = true,
         initialScrollIndex: Int? = nil,
+        initialFilter: MediaFilter = .all,
         onSelect: @escaping (Int) -> Void,
         onDismiss: @escaping () -> Void
     ) {
@@ -100,8 +192,40 @@ public struct MediaGalleryGridView: View {
         self.multiSelectActions = multiSelectActions
         self.includeBuiltInShareAction = includeBuiltInShareAction
         self.initialScrollIndex = initialScrollIndex
+        self.initialFilter = initialFilter
         self.onSelect = onSelect
+        self.onSelectWithFilteredItems = nil
+        self.onFilterChange = nil
         self.onDismiss = onDismiss
+        _selectedFilter = State(initialValue: initialFilter)
+    }
+
+    /// New init with filter callback for respecting grid filters in MediaGalleryView
+    public init(
+        mediaItems: [any MediaItem],
+        configuration: MediaGalleryConfiguration = MediaGalleryConfiguration(),
+        filterConfig: MediaGalleryFilterConfig = MediaGalleryFilterConfig(),
+        multiSelectActions: [MediaGalleryMultiSelectAction] = [],
+        includeBuiltInShareAction: Bool = true,
+        initialScrollIndex: Int? = nil,
+        initialFilter: MediaFilter = .all,
+        onSelect: @escaping (Int) -> Void,
+        onSelectWithFilteredItems: @escaping ([any MediaItem], Int) -> Void,
+        onFilterChange: ((MediaFilter) -> Void)? = nil,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.mediaItems = mediaItems
+        self.configuration = configuration
+        self.filterConfig = filterConfig
+        self.multiSelectActions = multiSelectActions
+        self.includeBuiltInShareAction = includeBuiltInShareAction
+        self.initialScrollIndex = initialScrollIndex
+        self.initialFilter = initialFilter
+        self.onSelect = onSelect
+        self.onSelectWithFilteredItems = onSelectWithFilteredItems
+        self.onFilterChange = onFilterChange
+        self.onDismiss = onDismiss
+        _selectedFilter = State(initialValue: initialFilter)
     }
 
     private var gridColumns: [GridItem] {
@@ -132,14 +256,18 @@ public struct MediaGalleryGridView: View {
                                     handleItemHidden(itemId: itemId)
                                 }
                             )
-                            .id(item.id)
+                            .id("\(item.id)-\(refreshID)")  // Combined ID forces recreation on refresh
                             .onTapGesture {
                                 handleItemTap(item: item, index: index)
                             }
                             .contextMenu {
                                 Button(action: {
-                                    let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
-                                    onSelect(originalIndex)
+                                    if let onSelectWithFilteredItems = onSelectWithFilteredItems {
+                                        onSelectWithFilteredItems(filteredItems, index)
+                                    } else {
+                                        let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
+                                        onSelect(originalIndex)
+                                    }
                                 }) {
                                     Label("View", systemImage: "eye")
                                 }
@@ -175,6 +303,9 @@ public struct MediaGalleryGridView: View {
                     #endif
                     .padding(.bottom, (isMultiSelectMode && !selectedItems.isEmpty) ? 70 : 0) // Make room for toolbar
                 }
+                .refreshable {
+                    await refreshCacheAsync()
+                }
                 .onAppear {
                     scrollToInitialIndex(proxy: proxy)
                 }
@@ -196,15 +327,26 @@ public struct MediaGalleryGridView: View {
                         multiSelectControlBar
                     }
 
-                    // Select button on macOS to enter multi-select mode
+                    // Select and refresh buttons on macOS
                     if !isMultiSelectMode {
                         Spacer()
-                        Button(action: {
-                            isMultiSelectMode = true
-                        }) {
-                            Label("Select", systemImage: "checkmark.circle")
+
+                        HStack(spacing: 12) {
+                            // Refresh button to clear cache
+                            Button(action: {
+                                refreshCache()
+                            }) {
+                                Label("Refresh", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button(action: {
+                                isMultiSelectMode = true
+                            }) {
+                                Label("Select", systemImage: "checkmark.circle")
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
                         .padding(.trailing, 16)
                         .padding(.vertical, hasMultipleMediaTypes ? 0 : 12)
                     }
@@ -258,13 +400,16 @@ public struct MediaGalleryGridView: View {
         }
         #endif
         #if os(iOS)
-        .sheet(isPresented: $showShareSheet) {
+        .sheet(isPresented: Binding(
+            get: { showShareSheet && !shareItems.isEmpty },
+            set: { showShareSheet = $0 }
+        )) {
             ShareSheet(items: shareItems)
         }
         #elseif os(macOS)
         .background(
             Group {
-                if showShareSheet {
+                if showShareSheet && !shareItems.isEmpty {
                     ShareSheetMac(items: shareItems, isPresented: $showShareSheet)
                 }
             }
@@ -274,6 +419,10 @@ public struct MediaGalleryGridView: View {
             checkMediaTypes()
             applyFilters()
             // Thumbnails are now loaded lazily as items become visible
+        }
+        .onChange(of: selectedFilter) { _, newFilter in
+            applyFilters()
+            onFilterChange?(newFilter)
         }
         .onDisappear {
             // Clear visible items tracking when view disappears
@@ -385,8 +534,14 @@ public struct MediaGalleryGridView: View {
         if isMultiSelectMode {
             toggleSelection(for: item.id)
         } else {
-            let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
-            onSelect(originalIndex)
+            // Call the filtered items callback if provided (preferred for respecting filters)
+            if let onSelectWithFilteredItems = onSelectWithFilteredItems {
+                onSelectWithFilteredItems(filteredItems, index)
+            } else {
+                // Fallback to original behavior - convert to original index
+                let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
+                onSelect(originalIndex)
+            }
         }
     }
 
@@ -474,6 +629,47 @@ public struct MediaGalleryGridView: View {
 
     private func executeBuiltInShareAction() {
         shareSelected()
+    }
+
+    /// Clear all caches and reload thumbnails (sync version for button)
+    private func refreshCache() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+
+        // Clear all caches
+        MediaStreamCache.clearAll()
+
+        // Clear local tracking
+        videoDurations.removeAll()
+        videoHasAudio.removeAll()
+
+        // Generate new refresh ID to force all LazyThumbnailViews to recreate
+        refreshID = UUID()
+
+        // Brief delay to allow UI to update
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            isRefreshing = false
+        }
+    }
+
+    /// Clear all caches and reload thumbnails (async version for pull-to-refresh)
+    private func refreshCacheAsync() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+
+        // Clear all caches
+        MediaStreamCache.clearAll()
+
+        // Clear local tracking
+        videoDurations.removeAll()
+        videoHasAudio.removeAll()
+
+        // Generate new refresh ID to force all LazyThumbnailViews to recreate
+        refreshID = UUID()
+
+        // Brief delay to allow UI to update and show the refresh indicator
+        try? await Task.sleep(nanoseconds: 300_000_000)  // 300ms
+        isRefreshing = false
     }
 
     private func applyFilters() {
@@ -774,8 +970,12 @@ struct LazyThumbnailView: View {
     }
 
     private func loadThumbnailIfNeeded() {
-        // Check cache first
-        if let cached = ThumbnailCache.shared.get(mediaItem.id) {
+        // Skip disk cache for animated images to preserve animation data
+        let isAnimated = mediaItem.type == .animatedImage
+        let diskCacheKey = isAnimated ? nil : mediaItem.diskCacheKey
+
+        // Check memory cache first, then disk cache (skip disk for animated)
+        if let cached = ThumbnailCache.shared.get(mediaItem.id, diskCacheKey: diskCacheKey) {
             self.thumbnail = cached
             return
         }
@@ -783,20 +983,32 @@ struct LazyThumbnailView: View {
         guard !isLoading else { return }
         isLoading = true
 
-        Task {
-            // Use the optimized loadThumbnail method which can use ImageIO
-            // for efficient downsampling without loading full image into memory
-            if let thumb = await mediaItem.loadThumbnail(targetSize: ThumbnailCache.thumbnailSize) {
-                // Cache it
-                ThumbnailCache.shared.set(mediaItem.id, image: thumb)
-
-                await MainActor.run {
-                    self.thumbnail = thumb
-                    self.isLoading = false
+        Task(priority: .utility) {
+            // Use concurrency limiting to prevent too many simultaneous loads
+            await ThumbnailLoadingQueue.shared.withLimit {
+                // Double-check cache after waiting in queue (memory and disk)
+                if let cached = ThumbnailCache.shared.get(mediaItem.id, diskCacheKey: diskCacheKey) {
+                    await MainActor.run {
+                        self.thumbnail = cached
+                        self.isLoading = false
+                    }
+                    return
                 }
-            } else {
-                await MainActor.run {
-                    self.isLoading = false
+
+                // Use the optimized loadThumbnail method which can use ImageIO
+                // for efficient downsampling without loading full image into memory
+                if let thumb = await mediaItem.loadThumbnail(targetSize: ThumbnailCache.thumbnailSize) {
+                    // Cache it (both memory and disk if key available, skip disk for animated)
+                    ThumbnailCache.shared.set(mediaItem.id, image: thumb, diskCacheKey: diskCacheKey)
+
+                    await MainActor.run {
+                        self.thumbnail = thumb
+                        self.isLoading = false
+                    }
+                } else {
+                    await MainActor.run {
+                        self.isLoading = false
+                    }
                 }
             }
         }
@@ -832,8 +1044,47 @@ struct MediaThumbnailView: View {
 // MARK: - Preview Support
 
 #if DEBUG
+import ImageIO
+
+// MARK: - MediaGalleryFullView Preview (Use This!)
+// This is the recommended preview - it shows the combined grid + slideshow view
+
+#Preview("📸 MediaGalleryFullView") {
+    @Previewable @State var isPresented = true
+
+    NavigationStack {
+        MediaGalleryFullView(
+            mediaItems: PreviewSampleMedia.createComprehensiveTestMedia(),
+            configuration: MediaGalleryConfiguration(
+                slideshowDuration: 5.0,
+                showControls: true,
+                backgroundColor: .black
+            ),
+            onDismiss: {
+                print("Gallery dismissed")
+            }
+        )
+    }
+}
+
+#Preview("📸 MediaGalleryFullView - Local Files Only") {
+    NavigationStack {
+        MediaGalleryFullView(
+            mediaItems: PreviewSampleMedia.createLocalTestMedia(),
+            configuration: MediaGalleryConfiguration(
+                slideshowDuration: 5.0,
+                showControls: true
+            ),
+            onDismiss: {
+                print("Gallery dismissed")
+            }
+        )
+    }
+}
+
 #Preview("Comprehensive Gallery with Real Media") {
     @Previewable @State var selectedIndex: Int? = nil
+    @Previewable @State var displayedItems: [any MediaItem] = []
 
     let mediaItems = PreviewSampleMedia.createComprehensiveTestMedia()
 
@@ -848,6 +1099,13 @@ struct MediaThumbnailView: View {
                     backgroundColor: .black
                 ),
                 onSelect: { index in
+                    // Fallback - not using filtered items
+                    displayedItems = mediaItems
+                    selectedIndex = index
+                },
+                onSelectWithFilteredItems: { filteredItems, index in
+                    // Use filtered items for navigation
+                    displayedItems = filteredItems
                     selectedIndex = index
                 },
                 onDismiss: {
@@ -855,9 +1113,9 @@ struct MediaThumbnailView: View {
                 }
             )
         } else {
-            // Show slideshow
+            // Show slideshow with filtered items
             MediaGalleryView(
-                mediaItems: mediaItems,
+                mediaItems: displayedItems.isEmpty ? mediaItems : displayedItems,
                 initialIndex: selectedIndex ?? 0,
                 configuration: MediaGalleryConfiguration(
                     slideshowDuration: 3.0,
@@ -924,82 +1182,248 @@ struct MediaThumbnailView: View {
 fileprivate struct PreviewSampleMedia {
     static func createComprehensiveTestMedia() -> [any MediaItem] {
         var items: [any MediaItem] = []
-        let testAssetsPath = "/tmp/MediaGalleryTestAssets"
+
+        // Search paths for test media
+        let searchPaths = [
+            "/Users/Shared",
+            "/tmp/MediaGalleryTestAssets",
+            "/Volumes/unity/test",  // External drive test folder
+            NSString(string: "~/Downloads").expandingTildeInPath,
+            NSString(string: "~/Desktop").expandingTildeInPath
+        ]
 
         // Add real test media files if they exist
         let testFiles: [(String, MediaType)] = [
+            // WebM videos (VLC player)
+            ("test.webm", .video),
+            ("test_vp9.webm", .video),
+            ("Big_Buck_Bunny_1080_10s_30MB.webm", .video),  // High-res WebM test
+            ("Big_Buck_Bunny_1080_10s_30MB-2.webm", .video),
+            // Standard videos
+            ("test.mp4", .video),
+            ("test_video.mp4", .video),
+            ("test.mov", .video),
+            // Images
             ("test.jpg", .image),
             ("test.png", .image),
             ("sample.jpg", .image),
             ("test.heic", .image),
+            // Animated images
             ("test_animated.gif", .animatedImage),
             ("test_animated.png", .animatedImage),
+            ("test.gif", .animatedImage),
             ("test_single.gif", .image),
-            ("test_video.mp4", .video),
         ]
 
-        print("📁 Looking for test media in: \(testAssetsPath)")
+        print("📁 Searching for test media in: \(searchPaths)")
 
-        for (filename, type) in testFiles {
-            let url = URL(fileURLWithPath: "\(testAssetsPath)/\(filename)")
-            if FileManager.default.fileExists(atPath: url.path) {
-                print("✓ Found: \(filename)")
-                if type == .video {
-                    items.append(VideoMediaItem(
-                        id: UUID(),
-                        videoURLLoader: { url },
-                        thumbnailLoader: {
-                            // Generate thumbnail from video
-                            let asset = AVAsset(url: url)
-                            let imageGenerator = AVAssetImageGenerator(asset: asset)
-                            imageGenerator.appliesPreferredTrackTransform = true
+        for searchPath in searchPaths {
+            for (filename, type) in testFiles {
+                let url = URL(fileURLWithPath: "\(searchPath)/\(filename)")
+                if FileManager.default.fileExists(atPath: url.path) {
+                    // Check if we already have this file
+                    let alreadyAdded = items.contains { _ in
+                        // Can't easily check, so skip duplicates by filename
+                        false
+                    }
+                    guard !alreadyAdded else { continue }
 
-                            do {
-                                let cgImage = try imageGenerator.copyCGImage(at: .zero, actualTime: nil)
-                                #if canImport(UIKit)
-                                return UIImage(cgImage: cgImage)
-                                #elseif canImport(AppKit)
-                                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                                #endif
-                            } catch {
-                                print("⚠️ Failed to generate thumbnail for \(filename): \(error)")
-                                return nil
+                    print("✓ Found: \(filename) in \(searchPath)")
+                    if type == .video {
+                        let capturedURL = url
+                        let capturedFilename = filename
+                        items.append(VideoMediaItem(
+                            id: UUID(),
+                            videoURLLoader: { capturedURL },
+                            thumbnailLoader: {
+                                // Use WebView for WebM thumbnails, AVFoundation for others
+                                if capturedFilename.hasSuffix(".webm") {
+                                    print("🎬 Generating WebView thumbnail for: \(capturedFilename)")
+                                    return await WebViewVideoController.generateThumbnail(
+                                        from: capturedURL,
+                                        targetSize: ThumbnailCache.thumbnailSize,
+                                        headers: nil
+                                    )
+                                } else {
+                                    // Generate thumbnail from video using AVFoundation
+                                    let asset = AVAsset(url: capturedURL)
+                                    let imageGenerator = AVAssetImageGenerator(asset: asset)
+                                    imageGenerator.appliesPreferredTrackTransform = true
+
+                                    do {
+                                        let cgImage = try imageGenerator.copyCGImage(at: .zero, actualTime: nil)
+                                        #if canImport(UIKit)
+                                        return UIImage(cgImage: cgImage)
+                                        #elseif canImport(AppKit)
+                                        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                                        #endif
+                                    } catch {
+                                        print("⚠️ Failed to generate thumbnail for \(capturedFilename): \(error)")
+                                        return ThumbnailCache.createVideoPlaceholder(targetSize: ThumbnailCache.thumbnailSize)
+                                    }
+                                }
                             }
-                        }
-                    ))
-                } else if type == .animatedImage {
-                    items.append(AnimatedImageMediaItem(
-                        id: UUID(),
-                        imageLoader: {
-                            #if canImport(UIKit)
-                            return UIImage(contentsOfFile: url.path)
-                            #elseif canImport(AppKit)
-                            return NSImage(contentsOfFile: url.path)
-                            #endif
-                        },
-                        durationLoader: {
-                            await AnimatedImageHelper.getAnimatedImageDuration(from: url)
-                        }
-                    ))
-                } else {
-                    items.append(ImageMediaItem(
-                        id: UUID(),
-                        imageLoader: {
-                            #if canImport(UIKit)
-                            return UIImage(contentsOfFile: url.path)
-                            #elseif canImport(AppKit)
-                            return NSImage(contentsOfFile: url.path)
-                            #endif
-                        }
-                    ))
+                        ))
+                    } else if type == .animatedImage {
+                        let capturedURL = url
+                        items.append(AnimatedImageMediaItem(
+                            id: UUID(),
+                            imageLoader: {
+                                #if canImport(UIKit)
+                                return UIImage(contentsOfFile: capturedURL.path)
+                                #elseif canImport(AppKit)
+                                return NSImage(contentsOfFile: capturedURL.path)
+                                #endif
+                            },
+                            durationLoader: {
+                                await AnimatedImageHelper.getAnimatedImageDuration(from: capturedURL)
+                            }
+                        ))
+                    } else {
+                        let capturedURL = url
+                        items.append(ImageMediaItem(
+                            id: UUID(),
+                            imageLoader: {
+                                #if canImport(UIKit)
+                                return UIImage(contentsOfFile: capturedURL.path)
+                                #elseif canImport(AppKit)
+                                return NSImage(contentsOfFile: capturedURL.path)
+                                #endif
+                            }
+                        ))
+                    }
                 }
-            } else {
-                print("✗ Not found: \(filename)")
             }
         }
 
+        let localMediaCount = items.count
+        print("📊 Loaded \(localMediaCount) local test media files")
+
+        // Add networked test media items
+        print("🌐 Adding networked test media items...")
+
+        // For authenticated remote videos, the app should provide presigned URLs
+        // that include auth in query params (e.g., S3 presigned URLs)
+        // MediaStream just plays whatever URL it's given
+
+        // Public test video - MP4 (Big Buck Bunny - Creative Commons)
+        let networkVideoURL = URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4")!
+        items.insert(VideoMediaItem(
+            id: UUID(),
+            videoURLLoader: { networkVideoURL },
+            thumbnailLoader: {
+                print("🌐 Loading networked MP4 video thumbnail...")
+                // Try to generate thumbnail using AVFoundation with network support
+                let asset = AVURLAsset(url: networkVideoURL)
+                let imageGenerator = AVAssetImageGenerator(asset: asset)
+                imageGenerator.appliesPreferredTrackTransform = true
+
+                do {
+                    let cgImage = try imageGenerator.copyCGImage(at: .zero, actualTime: nil)
+                    print("✅ Networked MP4 video thumbnail generated")
+                    #if canImport(UIKit)
+                    return UIImage(cgImage: cgImage)
+                    #elseif canImport(AppKit)
+                    return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                    #endif
+                } catch {
+                    print("⚠️ Failed to generate networked MP4 video thumbnail: \(error)")
+                    return ThumbnailCache.createVideoPlaceholder(targetSize: ThumbnailCache.thumbnailSize)
+                }
+            }
+        ), at: 0)
+        print("✓ Added networked MP4 video: Big Buck Bunny (360p)")
+
+        // Public test video - WebM (Big Buck Bunny - Creative Commons)
+        // Uses WebView for thumbnail generation since AVFoundation doesn't support WebM
+        let networkWebmURL = URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/webm/vp9/360/Big_Buck_Bunny_360_10s_1MB.webm")!
+        items.insert(VideoMediaItem(
+            id: UUID(),
+            videoURLLoader: { networkWebmURL },
+            thumbnailLoader: {
+                print("🌐 Loading networked WebM video thumbnail via WebView...")
+                let thumbnail = await WebViewVideoController.generateThumbnail(
+                    from: networkWebmURL,
+                    targetSize: ThumbnailCache.thumbnailSize,
+                    headers: nil
+                )
+                if thumbnail != nil {
+                    print("✅ Networked WebM video thumbnail generated")
+                } else {
+                    print("⚠️ Failed to generate networked WebM video thumbnail")
+                }
+                return thumbnail ?? ThumbnailCache.createVideoPlaceholder(targetSize: ThumbnailCache.thumbnailSize)
+            }
+        ), at: 1)
+        print("✓ Added networked WebM video: Big Buck Bunny VP9 (360p)")
+
+        // Public test image (placeholder image service)
+        let networkImageURL = URL(string: "https://picsum.photos/800/600")!
+        items.insert(ImageMediaItem(
+            id: UUID(),
+            imageLoader: {
+                print("🌐 Loading networked image...")
+                do {
+                    let (data, _) = try await URLSession.shared.data(from: networkImageURL)
+                    #if canImport(UIKit)
+                    if let image = UIImage(data: data) {
+                        print("✅ Networked image loaded")
+                        return image
+                    }
+                    #elseif canImport(AppKit)
+                    if let image = NSImage(data: data) {
+                        print("✅ Networked image loaded")
+                        return image
+                    }
+                    #endif
+                } catch {
+                    print("⚠️ Failed to load networked image: \(error)")
+                }
+                return nil
+            }
+        ), at: 2)
+        print("✓ Added networked image: Random from picsum.photos")
+
+        // Public animated GIFs from Giphy
+        let animatedGIFURLs: [(URL, String)] = [
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcDd2OWRyMnNhMzVkOWt0N2RjZnNhNjN3NnV3OXBwNHo2ZGtvbWhueSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7aCSPqXE5C6T8tBC/giphy.gif")!, "Stars Animation"),
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExYzRlMjM5NzY0MzdiYjhhZTgzMjJlMjBiOWE4OWRjMmM2YTk0OTYwNyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/l0HlBO7eyXzSZkJri/giphy.gif")!, "Wave Animation"),
+            (URL(string: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNDhiMzYxMjU0ZjJkNjM5ZDE5NWY2ZWE3NTg1MTBiMzM5MjNlNDIwMyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/xT9IgzoKnwFNmISR8I/giphy.gif")!, "Loading Animation")
+        ]
+
+        for (index, (gifURL, name)) in animatedGIFURLs.enumerated() {
+            let capturedURL = gifURL
+            items.insert(AnimatedImageMediaItem(
+                id: UUID(),
+                imageLoader: {
+                    print("🌐 Loading animated GIF: \(name)...")
+                    do {
+                        let (data, _) = try await URLSession.shared.data(from: capturedURL)
+                        #if canImport(UIKit)
+                        if let image = PreviewSampleMedia.animatedImageFromGIFData(data) {
+                            print("✅ Animated GIF loaded: \(name)")
+                            return image
+                        }
+                        #elseif canImport(AppKit)
+                        if let image = NSImage(data: data) {
+                            print("✅ Animated GIF loaded: \(name)")
+                            return image
+                        }
+                        #endif
+                    } catch {
+                        print("⚠️ Failed to load animated GIF: \(error)")
+                    }
+                    return nil
+                },
+                durationLoader: {
+                    return 2.0  // Approximate duration
+                }
+            ), at: 3 + index)
+            print("✓ Added animated GIF: \(name)")
+        }
+
         let realMediaCount = items.count
-        print("📊 Loaded \(realMediaCount) real test media files")
+        print("📊 Total real media files (local + networked): \(realMediaCount)")
 
         // Fill to 50+ items with generated colored images
         let colors: [(Color, String)] = [
@@ -1038,6 +1462,140 @@ fileprivate struct PreviewSampleMedia {
         print("🎨 Generated \(items.count - realMediaCount) colored placeholder images")
         print("✅ Total preview items: \(items.count)")
 
+        return items
+    }
+
+    /// Create local-only test media (no network requests)
+    /// Uses colored placeholder images for consistent Xcode canvas previewing
+    static func createLocalTestMedia() -> [any MediaItem] {
+        var items: [any MediaItem] = []
+
+        // Search for any real local files first
+        let searchPaths = [
+            "/Users/Shared",
+            "/tmp/MediaGalleryTestAssets",
+            NSString(string: "~/Downloads").expandingTildeInPath,
+            NSString(string: "~/Desktop").expandingTildeInPath
+        ]
+
+        let testFiles: [(String, MediaType)] = [
+            ("test.mp4", .video),
+            ("test.mov", .video),
+            ("test.jpg", .image),
+            ("test.png", .image),
+            ("test.gif", .animatedImage),
+        ]
+
+        for searchPath in searchPaths {
+            for (filename, type) in testFiles {
+                let url = URL(fileURLWithPath: "\(searchPath)/\(filename)")
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let capturedURL = url
+                    if type == .video {
+                        items.append(VideoMediaItem(
+                            id: UUID(),
+                            videoURLLoader: { capturedURL },
+                            thumbnailLoader: {
+                                let asset = AVAsset(url: capturedURL)
+                                let imageGenerator = AVAssetImageGenerator(asset: asset)
+                                imageGenerator.appliesPreferredTrackTransform = true
+                                do {
+                                    let cgImage = try imageGenerator.copyCGImage(at: .zero, actualTime: nil)
+                                    #if canImport(UIKit)
+                                    return UIImage(cgImage: cgImage)
+                                    #elseif canImport(AppKit)
+                                    return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                                    #endif
+                                } catch {
+                                    return ThumbnailCache.createVideoPlaceholder(targetSize: ThumbnailCache.thumbnailSize)
+                                }
+                            }
+                        ))
+                    } else if type == .animatedImage {
+                        items.append(AnimatedImageMediaItem(
+                            id: UUID(),
+                            imageLoader: {
+                                #if canImport(UIKit)
+                                return UIImage(contentsOfFile: capturedURL.path)
+                                #elseif canImport(AppKit)
+                                return NSImage(contentsOfFile: capturedURL.path)
+                                #endif
+                            },
+                            durationLoader: {
+                                await AnimatedImageHelper.getAnimatedImageDuration(from: capturedURL)
+                            }
+                        ))
+                    } else {
+                        items.append(ImageMediaItem(
+                            id: UUID(),
+                            imageLoader: {
+                                #if canImport(UIKit)
+                                return UIImage(contentsOfFile: capturedURL.path)
+                                #elseif canImport(AppKit)
+                                return NSImage(contentsOfFile: capturedURL.path)
+                                #endif
+                            }
+                        ))
+                    }
+                }
+            }
+        }
+
+        // Generate 30 colored placeholder images for consistent testing
+        let colors: [(Color, String, MediaType)] = [
+            (.red, "Red Image", .image),
+            (.blue, "Blue Image", .image),
+            (.green, "Green Image", .image),
+            (.orange, "Orange Image", .image),
+            (.purple, "Purple Image", .image),
+            (.pink, "Pink GIF", .animatedImage),
+            (.yellow, "Yellow Image", .image),
+            (.teal, "Teal Image", .image),
+            (.indigo, "Video", .video),
+            (.mint, "Mint Image", .image),
+            (.cyan, "Cyan GIF", .animatedImage),
+            (.brown, "Brown Image", .image)
+        ]
+
+        var colorIndex = 0
+        while items.count < 30 {
+            let (color, _, type) = colors[colorIndex % colors.count]
+            let itemNumber = items.count + 1
+
+            if type == .video {
+                items.append(VideoMediaItem(
+                    id: UUID(),
+                    videoURLLoader: { nil },  // No actual video
+                    thumbnailLoader: {
+                        await MainActor.run {
+                            generateColorImage(color: color, text: "🎬\(itemNumber)")
+                        }
+                    }
+                ))
+            } else if type == .animatedImage {
+                items.append(AnimatedImageMediaItem(
+                    id: UUID(),
+                    imageLoader: {
+                        await MainActor.run {
+                            generateColorImage(color: color, text: "✨\(itemNumber)")
+                        }
+                    },
+                    durationLoader: { 2.0 }
+                ))
+            } else {
+                items.append(ImageMediaItem(
+                    id: UUID(),
+                    imageLoader: {
+                        await MainActor.run {
+                            generateColorImage(color: color, text: "#\(itemNumber)")
+                        }
+                    }
+                ))
+            }
+            colorIndex += 1
+        }
+
+        print("✅ Local test media: \(items.count) items")
         return items
     }
 
@@ -1091,5 +1649,42 @@ fileprivate struct PreviewSampleMedia {
         return image
         #endif
     }
+
+    #if canImport(UIKit)
+    /// Create an animated UIImage from GIF data
+    static func animatedImageFromGIFData(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+
+        let count = CGImageSourceGetCount(source)
+        guard count > 1 else {
+            return UIImage(data: data)
+        }
+
+        var images: [UIImage] = []
+        var duration: TimeInterval = 0
+
+        for i in 0..<count {
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
+            images.append(UIImage(cgImage: cgImage))
+
+            if let properties = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [String: Any],
+               let gifProperties = properties[kCGImagePropertyGIFDictionary as String] as? [String: Any] {
+                if let delayTime = gifProperties[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double, delayTime > 0 {
+                    duration += delayTime
+                } else if let delayTime = gifProperties[kCGImagePropertyGIFDelayTime as String] as? Double {
+                    duration += delayTime
+                } else {
+                    duration += 0.1
+                }
+            } else {
+                duration += 0.1
+            }
+        }
+
+        return UIImage.animatedImage(with: images, duration: duration)
+    }
+    #endif
 }
 #endif
