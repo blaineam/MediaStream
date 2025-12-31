@@ -449,6 +449,58 @@ public struct AnimatedImageHelper {
     public static func requiresStreaming(url: URL) -> Bool {
         return requiresStreaming(frameCount: getFrameCount(from: url))
     }
+
+    /// Creates a temporary GIF file from UIImage frames for streaming playback
+    /// This is used when we have a loaded animated UIImage but need to use streaming
+    /// to avoid keeping all frames in memory
+    /// Returns the temp file URL, or nil if creation failed
+    public static func createTempGIFForStreaming(from image: UIImage) -> URL? {
+        guard let frames = image.images, frames.count > 1 else { return nil }
+
+        let frameCount = frames.count
+        let frameDuration = image.duration / Double(frameCount)
+
+        // Create temp file
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("streaming_\(UUID().uuidString).gif")
+
+        // Create GIF destination
+        guard let destination = CGImageDestinationCreateWithURL(
+            tempURL as CFURL,
+            UTType.gif.identifier as CFString,
+            frameCount,
+            nil
+        ) else { return nil }
+
+        // Set GIF properties
+        let gifProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFLoopCount as String: 0  // Loop forever
+            ]
+        ]
+        CGImageDestinationSetProperties(destination, gifProperties as CFDictionary)
+
+        // Add each frame
+        let frameProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFDelayTime as String: frameDuration
+            ]
+        ]
+
+        for frame in frames {
+            guard let cgImage = frame.cgImage else { continue }
+            CGImageDestinationAddImage(destination, cgImage, frameProperties as CFDictionary)
+        }
+
+        // Finalize
+        guard CGImageDestinationFinalize(destination) else {
+            try? FileManager.default.removeItem(at: tempURL)
+            return nil
+        }
+
+        print("AnimatedImageHelper: Created temp GIF for streaming (\(frameCount) frames) at \(tempURL.lastPathComponent)")
+        return tempURL
+    }
     #endif
 
     /// Calculates the adjusted slideshow duration for an animated image

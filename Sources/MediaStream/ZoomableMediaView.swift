@@ -905,6 +905,12 @@ struct ZoomableMediaView: View {
         }
         .onDisappear {
             // Critical: Release memory when view disappears to prevent OOM
+            // Delete temp streaming GIF file if it exists
+            if let tempURL = animatedImageURL, tempURL.path.contains("streaming_") {
+                try? FileManager.default.removeItem(at: tempURL)
+                print("ZoomableMediaView: Deleted temp streaming GIF")
+            }
+
             // Clear image/video/animated image state
             image = nil
             videoURL = nil
@@ -993,15 +999,27 @@ struct ZoomableMediaView: View {
                 }
             } else {
                 // No URL or Data available - fall back to loadImage()
-                // This may OOM for large GIFs, but it's the app's responsibility to provide URL/Data
                 if let loadedImage = await mediaItem.loadImage() {
-                    // Log warning for large GIFs but still animate them
-                    // (memory is already allocated at this point - stripping frames doesn't help)
+                    // Check if this is a large animated GIF that needs streaming
                     if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
-                        print("ZoomableMediaView: ⚠️ Large GIF (\(frames.count) frames) - implement loadAnimatedImageURL() or loadAnimatedImageData() for better memory efficiency")
+                        print("ZoomableMediaView: Large GIF (\(frames.count) frames) - converting to streaming format")
+                        // Create temp GIF file for streaming to avoid OOM
+                        if let tempURL = AnimatedImageHelper.createTempGIFForStreaming(from: loadedImage) {
+                            animatedImageURL = tempURL
+                            useStreaming = true
+                            hasLoadedMedia = true
+                            // Don't keep the full UIImage in memory - streaming will reload from file
+                        } else {
+                            // Fallback: couldn't create temp file, show first frame only to prevent crash
+                            print("ZoomableMediaView: ⚠️ Failed to create streaming GIF, showing first frame only")
+                            image = frames.first ?? loadedImage
+                            hasLoadedMedia = true
+                        }
+                    } else {
+                        // Small enough to keep in memory
+                        image = loadedImage
+                        hasLoadedMedia = true
                     }
-                    image = loadedImage
-                    hasLoadedMedia = true
                 }
             }
             #else
