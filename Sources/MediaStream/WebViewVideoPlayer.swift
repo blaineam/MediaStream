@@ -866,6 +866,16 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     .first { $0.isKeyWindow }
                 webView.frame = CGRect(x: -1000, y: -1000, width: 1, height: 1)
                 window?.addSubview(webView)
+                #elseif canImport(AppKit)
+                // macOS: Need to add to view hierarchy for WKWebView to load properly
+                let window = NSApplication.shared.windows.first ?? NSWindow(
+                    contentRect: NSRect(x: -1000, y: -1000, width: 1, height: 1),
+                    styleMask: .borderless,
+                    backing: .buffered,
+                    defer: true
+                )
+                webView.frame = NSRect(x: -1000, y: -1000, width: 1, height: 1)
+                window.contentView?.addSubview(webView)
                 #endif
 
                 controller.load(url: url, headers: headers)
@@ -878,6 +888,8 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 }
 
                 #if canImport(UIKit)
+                webView.removeFromSuperview()
+                #elseif canImport(AppKit)
                 webView.removeFromSuperview()
                 #endif
 
@@ -902,6 +914,16 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     .first { $0.isKeyWindow }
                 webView.frame = CGRect(x: -1000, y: -1000, width: 1, height: 1)
                 window?.addSubview(webView)
+                #elseif canImport(AppKit)
+                // macOS: Need to add to view hierarchy for WKWebView to load properly
+                let window = NSApplication.shared.windows.first ?? NSWindow(
+                    contentRect: NSRect(x: -1000, y: -1000, width: 1, height: 1),
+                    styleMask: .borderless,
+                    backing: .buffered,
+                    defer: true
+                )
+                webView.frame = NSRect(x: -1000, y: -1000, width: 1, height: 1)
+                window.contentView?.addSubview(webView)
                 #endif
 
                 controller.load(url: url, headers: headers)
@@ -914,6 +936,8 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 }
 
                 #if canImport(UIKit)
+                webView.removeFromSuperview()
+                #elseif canImport(AppKit)
                 webView.removeFromSuperview()
                 #endif
 
@@ -959,7 +983,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
             Task { @MainActor in
                 let webView = controller.createWebView()
 
-                // WKWebView needs to be in view hierarchy for proper loading on iOS
+                // WKWebView needs to be in view hierarchy for proper loading
                 #if canImport(UIKit)
                 // Create minimal offscreen window - needed for WKWebView to process loads
                 let windowScene = UIApplication.shared.connectedScenes
@@ -977,6 +1001,16 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 thumbnailWindow.rootViewController = UIViewController()
                 thumbnailWindow.rootViewController?.view.addSubview(webView)
                 webView.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+                #elseif canImport(AppKit)
+                // macOS: Create minimal offscreen window for WKWebView to process loads
+                let thumbnailWindow = NSWindow(
+                    contentRect: NSRect(x: -1000, y: -1000, width: 1, height: 1),
+                    styleMask: .borderless,
+                    backing: .buffered,
+                    defer: false
+                )
+                thumbnailWindow.contentView?.addSubview(webView)
+                webView.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
                 #endif
 
                 controller.load(url: url, headers: headers)
@@ -996,6 +1030,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     webView.removeFromSuperview()
                     thumbnailWindow.isHidden = true
                     thumbnailWindow.rootViewController = nil
+                    #elseif canImport(AppKit)
+                    webView.removeFromSuperview()
+                    thumbnailWindow.orderOut(nil)
                     #endif
                     controller.destroy()
                     continuation.resume(returning: nil)
@@ -1114,6 +1151,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     webView.removeFromSuperview()
                     thumbnailWindow.isHidden = true
                     thumbnailWindow.rootViewController = nil
+                    #elseif canImport(AppKit)
+                    webView.removeFromSuperview()
+                    thumbnailWindow.orderOut(nil)
                     #endif
                     controller.destroy()
                     continuation.resume(returning: nil)
@@ -1125,6 +1165,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 webView.removeFromSuperview()
                 thumbnailWindow.isHidden = true
                 thumbnailWindow.rootViewController = nil
+                #elseif canImport(AppKit)
+                webView.removeFromSuperview()
+                thumbnailWindow.orderOut(nil)
                 #endif
                 controller.destroy()
 
