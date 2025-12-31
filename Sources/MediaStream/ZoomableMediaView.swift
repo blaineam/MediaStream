@@ -1001,14 +1001,28 @@ struct ZoomableMediaView: View {
                 }
             } else {
                 // No URL or Data - fall back to loadImage()
-                // For small GIFs, keep in memory. For large, show first frame only.
                 if let loadedImage = await mediaItem.loadImage() {
                     if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
-                        // Large GIF with no URL/Data - can't use WebView, show first frame
-                        print("ZoomableMediaView: ⚠️ Large GIF (\(frames.count) frames) with no URL - showing first frame only")
-                        print("ZoomableMediaView: Implement loadAnimatedImageURL() for better performance")
-                        image = frames.first ?? loadedImage
-                        hasLoadedMedia = true
+                        // Large GIF - save to temp file and use WebView
+                        print("ZoomableMediaView: Large GIF (\(frames.count) frames) - saving to temp file for WebView")
+                        if let tempURL = AnimatedImageHelper.createTempGIFForStreaming(from: loadedImage) {
+                            animatedImageURL = tempURL
+                            useWebViewForAnimatedImage = true
+                            hasLoadedMedia = true
+
+                            await MainActor.run {
+                                if animatedImageController.webView == nil {
+                                    _ = animatedImageController.createWebView()
+                                }
+                                animatedImageController.load(url: tempURL)
+                            }
+                            // UIImage will be released when function exits
+                        } else {
+                            // Fallback: couldn't create temp file, show first frame
+                            print("ZoomableMediaView: ⚠️ Failed to create temp GIF, showing first frame")
+                            image = frames.first ?? loadedImage
+                            hasLoadedMedia = true
+                        }
                     } else {
                         // Small enough to keep in memory
                         image = loadedImage
