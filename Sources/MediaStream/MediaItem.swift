@@ -452,10 +452,12 @@ public struct AudioMediaItem: MediaItem {
     public func loadImage() async -> PlatformImage? {
         // For audio, loadImage returns the album artwork
         if let artworkLoader = artworkLoader {
-            return await artworkLoader()
+            if let artwork = await artworkLoader() {
+                return artwork
+            }
         }
-        // Return nil if no artwork available - UI can show placeholder
-        return nil
+        // Return audio placeholder if no artwork available
+        return ThumbnailCache.createAudioPlaceholder(targetSize: ThumbnailCache.thumbnailSize)
     }
 
     public func loadVideoURL() async -> URL? {

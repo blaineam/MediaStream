@@ -377,20 +377,30 @@ struct MediaFilterTests {
         #expect(MediaFilter.animated.matches(.animatedImage) == true)
     }
 
+    @Test("MediaFilter.audio matches only audio")
+    func audioMatchesOnlyAudio() {
+        #expect(MediaFilter.audio.matches(.image) == false)
+        #expect(MediaFilter.audio.matches(.video) == false)
+        #expect(MediaFilter.audio.matches(.animatedImage) == false)
+        #expect(MediaFilter.audio.matches(.audio) == true)
+    }
+
     @Test("MediaFilter raw values are correct")
     func rawValuesAreCorrect() {
         #expect(MediaFilter.all.rawValue == "All")
         #expect(MediaFilter.images.rawValue == "Images")
         #expect(MediaFilter.videos.rawValue == "Videos")
+        #expect(MediaFilter.audio.rawValue == "Audio")
         #expect(MediaFilter.animated.rawValue == "Animated")
     }
 
     @Test("MediaFilter allCases contains all filters")
     func allCasesContainsAll() {
-        #expect(MediaFilter.allCases.count == 4)
+        #expect(MediaFilter.allCases.count == 5)
         #expect(MediaFilter.allCases.contains(.all))
         #expect(MediaFilter.allCases.contains(.images))
         #expect(MediaFilter.allCases.contains(.videos))
+        #expect(MediaFilter.allCases.contains(.audio))
         #expect(MediaFilter.allCases.contains(.animated))
     }
 }

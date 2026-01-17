@@ -790,6 +790,63 @@ extension ThumbnailCache {
         return await WebViewVideoController.generateThumbnail(from: videoURL, targetSize: targetSize, headers: headers)
     }
 
+    /// Creates a placeholder thumbnail for audio files without cover artwork
+    public static func createAudioPlaceholder(targetSize: CGFloat) -> PlatformImage? {
+        #if canImport(UIKit)
+        let size = CGSize(width: targetSize, height: targetSize)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { context in
+            // Gradient background (dark purple to dark blue)
+            let colors = [
+                UIColor(red: 0.2, green: 0.1, blue: 0.3, alpha: 1.0).cgColor,
+                UIColor(red: 0.1, green: 0.15, blue: 0.35, alpha: 1.0).cgColor
+            ]
+            let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1])!
+            context.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+
+            // Draw music note icon
+            let iconSize: CGFloat = targetSize * 0.4
+            let iconRect = CGRect(
+                x: (size.width - iconSize) / 2,
+                y: (size.height - iconSize) / 2,
+                width: iconSize,
+                height: iconSize
+            )
+
+            if let musicIcon = UIImage(systemName: "music.note") {
+                musicIcon.withTintColor(.white, renderingMode: .alwaysOriginal)
+                    .draw(in: iconRect)
+            }
+        }
+        #elseif canImport(AppKit)
+        let size = NSSize(width: targetSize, height: targetSize)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        // Gradient background (dark purple to dark blue)
+        let gradient = NSGradient(colors: [
+            NSColor(red: 0.2, green: 0.1, blue: 0.3, alpha: 1.0),
+            NSColor(red: 0.1, green: 0.15, blue: 0.35, alpha: 1.0)
+        ])
+        gradient?.draw(in: NSRect(origin: .zero, size: size), angle: 270)
+
+        // Draw music note icon
+        if let musicIcon = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Audio") {
+            let iconSize: CGFloat = targetSize * 0.4
+            let iconRect = NSRect(
+                x: (size.width - iconSize) / 2,
+                y: (size.height - iconSize) / 2,
+                width: iconSize,
+                height: iconSize
+            )
+            musicIcon.draw(in: iconRect)
+        }
+
+        image.unlockFocus()
+        return image
+        #endif
+    }
+
     /// Creates a placeholder thumbnail for videos that can't generate thumbnails (e.g., WebM)
     public static func createVideoPlaceholder(targetSize: CGFloat) -> PlatformImage? {
         #if canImport(UIKit)

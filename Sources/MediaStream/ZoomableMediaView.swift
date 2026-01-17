@@ -578,6 +578,8 @@ struct AudioPlayerControlsView: View {
     let player: AVPlayer
     let shouldAutoplay: Bool
     var showControls: Bool = true
+    var isCurrentSlide: Bool = false
+    var videoLoopCount: Int = 0
     var onAudioComplete: (() -> Void)? = nil
     @Binding var savedPosition: Double
     @Binding var wasAtEnd: Bool
@@ -591,121 +593,137 @@ struct AudioPlayerControlsView: View {
     @State private var showVolumeSlider = false
     @State private var scrubPosition: Double = 0
     @State private var volumeCollapseTimer: Timer?
-    @State private var isReady = false
+    @State private var hasSetupPlayer = false
 
     @AppStorage("MediaStream_AudioVolume") private var volume: Double = 1.0
     @AppStorage("MediaStream_AudioMuted") private var isMuted: Bool = false
 
     var body: some View {
-        Group {
-            if showControls && isReady {
-                HStack(spacing: 12) {
-                    // Play/pause button
-                    Button(action: togglePlayPause) {
+        // Only check showControls - no isReady gate that blocks rendering
+        if showControls {
+            HStack(spacing: 12) {
+                // Play/pause button
+                Button(action: togglePlayPause) {
+                    ZStack {
+                        Circle()
+                            .fill(.ultraThinMaterial)
+                            .frame(width: 36, height: 36)
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Text(formatTime(isDragging ? scrubPosition : currentTime))
+                    .font(.caption)
+                    .foregroundColor(.white)
+                    .monospacedDigit()
+
+                Slider(
+                    value: Binding(
+                        get: { isDragging ? scrubPosition : currentTime },
+                        set: { scrubPosition = $0 }
+                    ),
+                    in: 0...max(duration, 0.1),
+                    onEditingChanged: { editing in
+                        if editing {
+                            scrubPosition = currentTime
+                            MediaControlsInteractionState.shared.isInteracting = true
+                        } else {
+                            seekTo(scrubPosition)
+                            MediaControlsInteractionState.shared.isInteracting = false
+                        }
+                        isDragging = editing
+                    }
+                )
+                .tint(.white)
+
+                Text(formatTime(duration))
+                    .font(.caption)
+                    .foregroundColor(.white)
+                    .monospacedDigit()
+
+                // Volume controls
+                HStack(spacing: 8) {
+                    if showVolumeSlider {
+                        Slider(value: $volume, in: 0...1) { editing in
+                            if !editing {
+                                applyVolume()
+                            }
+                            resetVolumeCollapseTimer()
+                        }
+                        .frame(width: 80)
+                        .tint(.white)
+                        .onChange(of: volume) { _, newValue in
+                            player.volume = Float(newValue)
+                            if newValue > 0 && isMuted {
+                                isMuted = false
+                                player.isMuted = false
+                            }
+                            resetVolumeCollapseTimer()
+                        }
+                    }
+
+                    Button(action: {
+                        if showVolumeSlider {
+                            toggleMute()
+                        } else {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showVolumeSlider = true
+                            }
+                        }
+                        resetVolumeCollapseTimer()
+                    }) {
                         ZStack {
                             Circle()
                                 .fill(.ultraThinMaterial)
                                 .frame(width: 36, height: 36)
-                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            Image(systemName: volumeIcon)
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundColor(.white)
                         }
                     }
                     .buttonStyle(.plain)
-
-                    Text(formatTime(isDragging ? scrubPosition : currentTime))
-                        .font(.caption)
-                        .foregroundColor(.white)
-                        .monospacedDigit()
-
-                    Slider(
-                        value: Binding(
-                            get: { isDragging ? scrubPosition : currentTime },
-                            set: { scrubPosition = $0 }
-                        ),
-                        in: 0...max(duration, 0.1),
-                        onEditingChanged: { editing in
-                            if editing {
-                                scrubPosition = currentTime
-                                MediaControlsInteractionState.shared.isInteracting = true
-                            } else {
-                                seekTo(scrubPosition)
-                                MediaControlsInteractionState.shared.isInteracting = false
-                            }
-                            isDragging = editing
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
+            .blockParentGestures()
+            .onAppear {
+                if !hasSetupPlayer {
+                    setupPlayer()
+                    hasSetupPlayer = true
+                }
+            }
+            .onDisappear {
+                cleanupObservers()
+            }
+            .onChange(of: shouldAutoplay) { _, newValue in
+                if newValue {
+                    player.play()
+                    isPlaying = true
+                } else {
+                    player.pause()
+                    isPlaying = false
+                }
+            }
+            .onChange(of: videoLoopCount) { oldValue, newValue in
+                // When loop count increments, restart the audio from the beginning
+                if newValue > oldValue && shouldAutoplay {
+                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                        Task { @MainActor in
+                            self.currentTime = 0.0
+                            self.savedPosition = 0.0
+                            self.wasAtEnd = false
+                            self.player.play()
+                            self.isPlaying = true
                         }
-                    )
-                    .tint(.white)
-
-                    Text(formatTime(duration))
-                        .font(.caption)
-                        .foregroundColor(.white)
-                        .monospacedDigit()
-
-                    // Volume controls
-                    HStack(spacing: 8) {
-                        if showVolumeSlider {
-                            Slider(value: $volume, in: 0...1) { editing in
-                                if !editing {
-                                    applyVolume()
-                                }
-                                resetVolumeCollapseTimer()
-                            }
-                            .frame(width: 80)
-                            .tint(.white)
-                            .onChange(of: volume) { _, newValue in
-                                player.volume = Float(newValue)
-                                if newValue > 0 && isMuted {
-                                    isMuted = false
-                                    player.isMuted = false
-                                }
-                                resetVolumeCollapseTimer()
-                            }
-                        }
-
-                        Button(action: {
-                            if showVolumeSlider {
-                                toggleMute()
-                            } else {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    showVolumeSlider = true
-                                }
-                            }
-                            resetVolumeCollapseTimer()
-                        }) {
-                            ZStack {
-                                Circle()
-                                    .fill(.ultraThinMaterial)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: volumeIcon)
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 20)
-                .padding(.bottom, 20)
-                .blockParentGestures()
-            }
-        }
-        .onAppear {
-            setupPlayer()
-        }
-        .onDisappear {
-            cleanupObservers()
-        }
-        .onChange(of: shouldAutoplay) { _, newValue in
-            if newValue && isReady {
-                player.play()
-                isPlaying = true
-            } else if !newValue {
-                player.pause()
-                isPlaying = false
             }
         }
     }
@@ -735,25 +753,28 @@ struct AudioPlayerControlsView: View {
 
         // Add time observer
         let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-            let newTime = CMTimeGetSeconds(time)
-            if newTime.isFinite {
-                currentTime = newTime
-                savedPosition = newTime
-            }
+        let observer = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            Task { @MainActor in
+                let currentTimeValue = CMTimeGetSeconds(time)
 
-            // Also try to get duration from current item if not set yet
-            if duration == 0, let item = player.currentItem {
-                let dur = CMTimeGetSeconds(item.duration)
-                if dur.isFinite && dur > 0 {
-                    duration = dur
+                if !self.isDragging {
+                    self.currentTime = currentTimeValue
+                    self.savedPosition = currentTimeValue
                 }
+
+                // Update duration if needed
+                if let currentItem = self.player.currentItem {
+                    let durationSeconds = CMTimeGetSeconds(currentItem.duration)
+                    if durationSeconds.isFinite && self.duration != durationSeconds {
+                        self.duration = durationSeconds
+                    }
+                }
+
+                // Update play state
+                self.isPlaying = self.player.rate > 0
             }
         }
-
-        // Mark as ready immediately so controls appear
-        // Duration will be updated when available
-        isReady = true
+        timeObserver = observer
 
         // Autoplay if requested
         if shouldAutoplay {
@@ -773,7 +794,6 @@ struct AudioPlayerControlsView: View {
                         }
                     }
                 } catch {
-                    print("Failed to load audio duration: \(error)")
                     // Duration will be updated via time observer as playback progresses
                 }
             }
@@ -791,10 +811,9 @@ struct AudioPlayerControlsView: View {
                     guard let notificationItem = notificationItem,
                           notificationItem == self.player.currentItem else { return }
 
-                    let currentPos = CMTimeGetSeconds(self.player.currentTime())
-                    let isAtEnd = self.duration > 0 && currentPos >= (self.duration - 0.1)
-                    guard isAtEnd else { return }
-
+                    // Trust the AVPlayerItemDidPlayToEndTime notification
+                    // For streaming content, duration may not be accurate, so we don't
+                    // strictly verify position - the system knows when playback ended
                     self.wasAtEnd = true
                     self.isPlaying = false
                     self.onAudioComplete?()
@@ -1108,6 +1127,8 @@ struct ZoomableMediaView: View {
                         player: player,
                         shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
                         showControls: showControls,
+                        isCurrentSlide: isCurrentSlide,
+                        videoLoopCount: videoLoopCount,
                         onAudioComplete: onVideoComplete,
                         savedPosition: $savedAudioPosition,
                         wasAtEnd: $audioWasAtEnd
@@ -1605,7 +1626,9 @@ struct ZoomableMediaView: View {
             if let url = await mediaItem.loadAudioURL() {
                 // For local files, verify the file exists
                 if url.isFileURL {
-                    guard FileManager.default.fileExists(atPath: url.path) else { return }
+                    guard FileManager.default.fileExists(atPath: url.path) else {
+                        return
+                    }
                 }
 
                 await MainActor.run {
