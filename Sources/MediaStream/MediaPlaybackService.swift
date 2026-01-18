@@ -201,7 +201,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
     // MARK: - Initialization
 
-    private override init() {
+    override private init() {
         super.init()
         setupAudioSession()
         setupRemoteCommands()
@@ -884,13 +884,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         }
 
         // Find first playable item
-        for index in searchOrder {
-            if isPlayableInCurrentMode(playlist[index].mediaItem) {
-                return index
-            }
-        }
-
-        return nil
+        return searchOrder.first { isPlayableInCurrentMode(playlist[$0].mediaItem) }
     }
 
     /// Check if a media item is playable in the current mode (foreground/background)
@@ -1275,6 +1269,7 @@ extension MediaPlaybackService: AVPictureInPictureControllerDelegate {
         }
     }
 
+    // swiftlint:disable:next line_length
     nonisolated public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
         Task { @MainActor in
             isPiPActive = false
