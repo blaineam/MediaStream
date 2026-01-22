@@ -209,18 +209,11 @@ struct CustomVideoPlayerView: View {
                     // Scrub bar at very bottom with play/pause on left
                     HStack(spacing: 12) {
                         // Play/pause button on left
-                        Button(action: togglePlayPause) {
-                            ZStack {
-                                Circle()
-                                    .fill(.ultraThinMaterial)
-                                    .frame(width: 36, height: 36)
-
-                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
+                        MediaStreamGlassButton(action: togglePlayPause) {
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
                         }
-                        .buttonStyle(.plain)
 
                         Text(formatTime(isDragging ? scrubPosition : currentTime))
                             .font(.caption)
@@ -280,7 +273,7 @@ struct CustomVideoPlayerView: View {
                             }
 
                             // Volume/mute button
-                            Button(action: {
+                            MediaStreamGlassButton(action: {
                                 if showVolumeSlider {
                                     toggleMute()
                                     resetVolumeCollapseTimer()
@@ -291,17 +284,10 @@ struct CustomVideoPlayerView: View {
                                     resetVolumeCollapseTimer()
                                 }
                             }) {
-                                ZStack {
-                                    Circle()
-                                        .fill(.ultraThinMaterial)
-                                        .frame(width: 36, height: 36)
-
-                                    Image(systemName: volumeIcon)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(.white)
-                                }
+                                Image(systemName: volumeIcon)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white)
                             }
-                            .buttonStyle(.plain)
                             .onLongPressGesture(minimumDuration: 0.3) {
                                 toggleMute()
                             }
@@ -309,7 +295,7 @@ struct CustomVideoPlayerView: View {
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .mediaStreamGlassBackgroundRounded()
                     .padding(.horizontal, 20)
                     .padding(.bottom, 20)
                     .onTapGesture {
@@ -655,96 +641,84 @@ struct AudioPlayerControlsView: View {
         // The view must always be present for lifecycle to work correctly
         HStack(spacing: 12) {
             // Play/pause button
-            Button(action: togglePlayPause) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 36, height: 36)
-                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
+            MediaStreamGlassButton(action: togglePlayPause) {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            Text(formatTime(isDragging ? scrubPosition : currentTime))
+                .font(.caption)
+                .foregroundColor(.white)
+                .monospacedDigit()
+
+            Slider(
+                value: Binding(
+                    get: { isDragging ? scrubPosition : currentTime },
+                    set: { scrubPosition = $0 }
+                ),
+                in: 0...max(duration, 0.1),
+                onEditingChanged: { editing in
+                    if editing {
+                        scrubPosition = currentTime
+                        MediaControlsInteractionState.shared.isInteracting = true
+                    } else {
+                        seekTo(scrubPosition)
+                        MediaControlsInteractionState.shared.isInteracting = false
                     }
+                    isDragging = editing
                 }
-                .buttonStyle(.plain)
+            )
+            .tint(.white)
 
-                Text(formatTime(isDragging ? scrubPosition : currentTime))
-                    .font(.caption)
-                    .foregroundColor(.white)
-                    .monospacedDigit()
+            Text(formatTime(duration))
+                .font(.caption)
+                .foregroundColor(.white)
+                .monospacedDigit()
 
-                Slider(
-                    value: Binding(
-                        get: { isDragging ? scrubPosition : currentTime },
-                        set: { scrubPosition = $0 }
-                    ),
-                    in: 0...max(duration, 0.1),
-                    onEditingChanged: { editing in
-                        if editing {
-                            scrubPosition = currentTime
-                            MediaControlsInteractionState.shared.isInteracting = true
-                        } else {
-                            seekTo(scrubPosition)
-                            MediaControlsInteractionState.shared.isInteracting = false
-                        }
-                        isDragging = editing
-                    }
-                )
-                .tint(.white)
-
-                Text(formatTime(duration))
-                    .font(.caption)
-                    .foregroundColor(.white)
-                    .monospacedDigit()
-
-                // Volume controls
-                HStack(spacing: 8) {
-                    if showVolumeSlider {
-                        Slider(value: $volume, in: 0...1) { editing in
-                            if !editing {
-                                applyVolume()
-                            }
-                            resetVolumeCollapseTimer()
-                        }
-                        .frame(width: 80)
-                        .tint(.white)
-                        .onChange(of: volume) { _, newValue in
-                            player.volume = Float(newValue)
-                            if newValue > 0 && isMuted {
-                                isMuted = false
-                                player.isMuted = false
-                            }
-                            resetVolumeCollapseTimer()
-                        }
-                    }
-
-                    Button(action: {
-                        if showVolumeSlider {
-                            toggleMute()
-                        } else {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showVolumeSlider = true
-                            }
+            // Volume controls
+            HStack(spacing: 8) {
+                if showVolumeSlider {
+                    Slider(value: $volume, in: 0...1) { editing in
+                        if !editing {
+                            applyVolume()
                         }
                         resetVolumeCollapseTimer()
-                    }) {
-                        ZStack {
-                            Circle()
-                                .fill(.ultraThinMaterial)
-                                .frame(width: 36, height: 36)
-                            Image(systemName: volumeIcon)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
+                    }
+                    .frame(width: 80)
+                    .tint(.white)
+                    .onChange(of: volume) { _, newValue in
+                        player.volume = Float(newValue)
+                        if newValue > 0 && isMuted {
+                            isMuted = false
+                            player.isMuted = false
+                        }
+                        resetVolumeCollapseTimer()
+                    }
+                }
+
+                MediaStreamGlassButton(action: {
+                    if showVolumeSlider {
+                        toggleMute()
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showVolumeSlider = true
                         }
                     }
-                    .buttonStyle(.plain)
+                    resetVolumeCollapseTimer()
+                }) {
+                    Image(systemName: volumeIcon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
-            .blockParentGestures()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .mediaStreamGlassBackgroundRounded()
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
+        .blockParentGestures()
             .onAppear {
                 // Always ensure player is set up when controls appear
                 // (observers may have been cleaned up when controls were hidden)

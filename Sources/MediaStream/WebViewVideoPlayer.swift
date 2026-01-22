@@ -1366,18 +1366,11 @@ public struct CustomWebViewVideoPlayerView: View {
 
                     HStack(spacing: 12) {
                         // Play/Pause
-                        Button(action: { controller.togglePlayPause() }) {
-                            ZStack {
-                                Circle()
-                                    .fill(.ultraThinMaterial)
-                                    .frame(width: 36, height: 36)
-
-                                Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
+                        MediaStreamGlassButton(action: { controller.togglePlayPause() }) {
+                            Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
                         }
-                        .buttonStyle(.plain)
 
                         Text(formatTime(isDragging ? scrubPosition : controller.currentTime))
                             .font(.caption)
@@ -1427,24 +1420,17 @@ public struct CustomWebViewVideoPlayerView: View {
                             .monospacedDigit()
 
                         // Mute button (WKWebView: mute/unmute only, always full volume)
-                        Button(action: {
+                        MediaStreamGlassButton(action: {
                             toggleMute()
                         }) {
-                            ZStack {
-                                Circle()
-                                    .fill(.ultraThinMaterial)
-                                    .frame(width: 36, height: 36)
-
-                                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
+                            Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
                         }
-                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .mediaStreamGlassBackgroundRounded()
                     .padding(.horizontal, 20)
                     .padding(.bottom, 20)
                     .blockParentGestures()

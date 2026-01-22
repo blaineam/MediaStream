@@ -54,11 +54,7 @@ public struct MediaDownloadButton: View {
 
     public var body: some View {
         Button(action: handleTap) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 36, height: 36)
-
+            Group {
                 switch cacheState {
                 case .notCached:
                     // Download icon
@@ -101,6 +97,8 @@ public struct MediaDownloadButton: View {
                         .foregroundColor(.green)
                 }
             }
+            .frame(width: 36, height: 36)
+            .mediaStreamGlassBackground()
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)

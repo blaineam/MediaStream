@@ -259,71 +259,26 @@ public struct MediaGalleryGridView: View {
             // Main scrollable content
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVGrid(columns: gridColumns, spacing: 16) {
-                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
-                            LazyThumbnailView(
-                                mediaItem: item,
-                                videoDuration: videoDurations[item.id],
-                                videoHasAudio: videoHasAudio[item.id],
-                                isSelected: selectedItems.contains(item.id),
-                                showSelection: isMultiSelectMode,
-                                onVisible: { itemId in
-                                    handleItemVisible(itemId: itemId, index: index)
-                                },
-                                onHidden: { itemId in
-                                    handleItemHidden(itemId: itemId)
-                                }
-                            )
-                            .id("\(item.id)-\(refreshID)")  // Combined ID forces recreation on refresh
-                            .onTapGesture {
-                                handleItemTap(item: item, index: index)
-                            }
-                            .contextMenu {
-                                Button(action: {
-                                    if let onSelectWithFilteredItems = onSelectWithFilteredItems {
-                                        onSelectWithFilteredItems(filteredItems, index)
-                                    } else {
-                                        let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
-                                        onSelect(originalIndex)
-                                    }
-                                }) {
-                                    Label("View", systemImage: "eye")
-                                }
-
-                                Button(action: {
-                                    Task {
-                                        await shareItem(item)
-                                    }
-                                }) {
-                                    Label("Share", systemImage: "square.and.arrow.up")
-                                }
-
-                                // Add custom actions from configuration
-                                if !configuration.customActions.isEmpty {
-                                    Divider()
-                                    ForEach(configuration.customActions) { action in
-                                        Button(action: {
-                                            let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
-                                            action.action(originalIndex)
-                                        }) {
-                                            Label(action.icon, systemImage: action.icon)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .padding(16)
-                    #if os(iOS)
-                    .padding(.top, (!isMultiSelectMode && hasMultipleMediaTypes) ? 50 : 0) // Make room for filter bar only when shown
-                    #else
-                    .padding(.top, 46) // Extra padding on top to separate from select overlay on macOS
-                    #endif
-                    .padding(.bottom, (isMultiSelectMode && !selectedItems.isEmpty) ? 70 : 0) // Make room for toolbar
+                    gridContent
+                        .padding(16)
+                        #if os(iOS)
+                        // Small top padding when filter bar is visible (safeAreaInset handles the main offset)
+                        .padding(.top, (!isMultiSelectMode && hasMultipleMediaTypes) ? 8 : 0)
+                        #else
+                        .padding(.top, 46)
+                        #endif
+                        .padding(.bottom, (isMultiSelectMode && !selectedItems.isEmpty) ? 70 : 0)
                 }
                 .refreshable {
                     await refreshCacheAsync()
                 }
+                #if os(iOS)
+                // Safe area inset to push content (and refresh indicator) below the filter bar overlay
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Color.clear
+                        .frame(height: (!isMultiSelectMode && hasMultipleMediaTypes) ? 44 : 0)
+                }
+                #endif
                 .onAppear {
                     scrollToInitialIndex(proxy: proxy)
                 }
@@ -332,7 +287,7 @@ public struct MediaGalleryGridView: View {
             // Overlay glass UI elements
             VStack(spacing: 0) {
                 #if os(iOS)
-                // iOS: Show filter bar if multiple media types (no standalone close button - using toolbar Done button)
+                // iOS: Fixed filter bar overlay
                 if !isMultiSelectMode && hasMultipleMediaTypes {
                     filterBar
                 }
@@ -376,7 +331,7 @@ public struct MediaGalleryGridView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .background(.ultraThinMaterial)
+                .mediaStreamGlassBar()
                 #endif
 
                 Spacer()
@@ -466,37 +421,28 @@ public struct MediaGalleryGridView: View {
 
     private var multiSelectToolbar: some View {
         HStack(spacing: 16) {
-            // Built-in share action (always first and orange)
+            // Built-in share action
             if includeBuiltInShareAction {
                 Button(action: {
                     executeBuiltInShareAction()
                 }) {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
             }
 
-            // Custom action buttons - Share is orange, others gray
+            // Custom action buttons
             ForEach(multiSelectActions) { action in
-                if action.title == "Share" {
-                    Button(action: {
-                        executeMultiSelectAction(action)
-                    }) {
-                        Label(action.title, systemImage: action.icon)
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button(action: {
-                        executeMultiSelectAction(action)
-                    }) {
-                        Label(action.title, systemImage: action.icon)
-                    }
-                    .buttonStyle(.bordered)
+                Button(action: {
+                    executeMultiSelectAction(action)
+                }) {
+                    Label(action.title, systemImage: action.icon)
                 }
+                .buttonStyle(.plain)
             }
         }
         .padding()
-        .background(.ultraThinMaterial)
+        .mediaStreamGlassBar()
         .cornerRadius(12)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
@@ -521,7 +467,65 @@ public struct MediaGalleryGridView: View {
                 .padding(.trailing, 16)
             }
         }
-        .background(.ultraThinMaterial)
+        .mediaStreamGlassBar()
+    }
+
+    /// Grid content extracted for use in both iOS and macOS layouts
+    private var gridContent: some View {
+        LazyVGrid(columns: gridColumns, spacing: 16) {
+            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                LazyThumbnailView(
+                    mediaItem: item,
+                    videoDuration: videoDurations[item.id],
+                    videoHasAudio: videoHasAudio[item.id],
+                    isSelected: selectedItems.contains(item.id),
+                    showSelection: isMultiSelectMode,
+                    onVisible: { itemId in
+                        handleItemVisible(itemId: itemId, index: index)
+                    },
+                    onHidden: { itemId in
+                        handleItemHidden(itemId: itemId)
+                    }
+                )
+                .id("\(item.id)-\(refreshID)")  // Combined ID forces recreation on refresh
+                .onTapGesture {
+                    handleItemTap(item: item, index: index)
+                }
+                .contextMenu {
+                    Button(action: {
+                        if let onSelectWithFilteredItems = onSelectWithFilteredItems {
+                            onSelectWithFilteredItems(filteredItems, index)
+                        } else {
+                            let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
+                            onSelect(originalIndex)
+                        }
+                    }) {
+                        Label("View", systemImage: "eye")
+                    }
+
+                    Button(action: {
+                        Task {
+                            await shareItem(item)
+                        }
+                    }) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+
+                    // Add custom actions from configuration
+                    if !configuration.customActions.isEmpty {
+                        Divider()
+                        ForEach(configuration.customActions) { action in
+                            Button(action: {
+                                let originalIndex = mediaItems.firstIndex(where: { $0.id == item.id }) ?? index
+                                action.action(originalIndex)
+                            }) {
+                                Label(action.icon, systemImage: action.icon)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #if os(macOS)
@@ -556,7 +560,7 @@ public struct MediaGalleryGridView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
+        .mediaStreamGlassBar()
     }
     #endif
 

@@ -256,7 +256,7 @@ public struct MediaGalleryView: View {
                             .foregroundStyle(.white)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(.ultraThinMaterial, in: Capsule())
+                            .mediaStreamGlassCapsule()
 
                         Spacer()
 
@@ -270,50 +270,32 @@ public struct MediaGalleryView: View {
 
                             // Custom action buttons
                             ForEach(configuration.customActions) { customAction in
-                                Button(action: { customAction.action(currentIndex); resetControlsTimer() }) {
-                                    ZStack {
-                                        Circle()
-                                            .fill(.ultraThinMaterial)
-                                            .frame(width: 36, height: 36)
-                                        Image(systemName: customAction.icon)
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundColor(.white)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            }
-
-                            // Share button
-                            Button(action: { shareCurrentItem(); resetControlsTimer() }) {
-                                ZStack {
-                                    Circle()
-                                        .fill(.ultraThinMaterial)
-                                        .frame(width: 36, height: 36)
-                                    Image(systemName: "square.and.arrow.up")
+                                MediaStreamGlassButton(action: { customAction.action(currentIndex); resetControlsTimer() }) {
+                                    Image(systemName: customAction.icon)
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundColor(.white)
                                 }
                             }
-                            .buttonStyle(.plain)
+
+                            // Share button
+                            MediaStreamGlassButton(action: { shareCurrentItem(); resetControlsTimer() }) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
 
                             // Close/Back button
-                            Button(action: {
+                            MediaStreamGlassButton(action: {
                                 if let onBackToGrid = onBackToGrid {
                                     onBackToGrid()
                                 } else {
                                     onDismiss()
                                 }
                             }) {
-                                ZStack {
-                                    Circle()
-                                        .fill(.ultraThinMaterial)
-                                        .frame(width: 36, height: 36)
-                                    Image(systemName: onBackToGrid != nil ? "arrow.left" : "xmark")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(.white)
-                                }
+                                Image(systemName: onBackToGrid != nil ? "arrow.left" : "xmark")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.leading)
@@ -538,56 +520,32 @@ public struct MediaGalleryView: View {
         // All controls in one row
         HStack(spacing: 16) {
             // Previous button
-            Button(action: { previousItem(); resetControlsTimer() }) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 36, height: 36)
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                }
+            MediaStreamGlassButton(action: { previousItem(); resetControlsTimer() }) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
             }
-            .buttonStyle(.plain)
 
             // Shuffle toggle button
-            Button(action: { toggleShuffle(); resetControlsTimer() }) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 36, height: 36)
-                    Image(systemName: isShuffled ? "shuffle" : "shuffle")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(isShuffled ? .accentColor : .white)
-                }
+            MediaStreamGlassButton(action: { toggleShuffle(); resetControlsTimer() }) {
+                Image(systemName: isShuffled ? "shuffle" : "shuffle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(isShuffled ? .accentColor : .white)
             }
-            .buttonStyle(.plain)
 
             // Loop mode toggle button
-            Button(action: { cycleLoopMode(); resetControlsTimer() }) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 36, height: 36)
-                    Image(systemName: loopMode.icon)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(loopMode == .off ? .white : .accentColor)
-                }
+            MediaStreamGlassButton(action: { cycleLoopMode(); resetControlsTimer() }) {
+                Image(systemName: loopMode.icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(loopMode == .off ? .white : .accentColor)
             }
-            .buttonStyle(.plain)
 
             // Slideshow Play/Pause button with duration context menu
-            Button(action: { toggleSlideshow(); resetControlsTimer() }) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 44, height: 44)
-                    Image(systemName: isSlideshowPlaying ? "stop.fill" : "play.square.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.white)
-                }
+            MediaStreamGlassButton(action: { toggleSlideshow(); resetControlsTimer() }, size: 44) {
+                Image(systemName: isSlideshowPlaying ? "stop.fill" : "play.square.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
             }
-            .buttonStyle(.plain)
             .contextMenu {
                 Text("Slideshow Duration")
                 Divider()
@@ -642,47 +600,29 @@ public struct MediaGalleryView: View {
             // PiP toggle button - only show for video when cached
             #if canImport(UIKit) && !os(macOS)
             if mediaItems[currentIndex].type == .video && MediaDownloadManager.shared.isCached(mediaItem: mediaItems[currentIndex]) {
-                Button(action: { playbackService.togglePiP(); resetControlsTimer() }) {
-                    ZStack {
-                        Circle()
-                            .fill(.ultraThinMaterial)
-                            .frame(width: 36, height: 36)
-                        Image(systemName: playbackService.isPiPActive ? "pip.exit" : "pip.enter")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
-                    }
+                MediaStreamGlassButton(action: { playbackService.togglePiP(); resetControlsTimer() }) {
+                    Image(systemName: playbackService.isPiPActive ? "pip.exit" : "pip.enter")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
                 }
-                .buttonStyle(.plain)
             }
             #endif
 
             // Caption toggle button (if caption exists)
             if currentCaption != nil {
-                Button(action: { withAnimation { showCaption.toggle() }; resetControlsTimer() }) {
-                    ZStack {
-                        Circle()
-                            .fill(.ultraThinMaterial)
-                            .frame(width: 36, height: 36)
-                        Image(systemName: showCaption ? "text.bubble.fill" : "text.bubble")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Next button
-            Button(action: { nextItem(); resetControlsTimer() }) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 36, height: 36)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 16, weight: .semibold))
+                MediaStreamGlassButton(action: { withAnimation { showCaption.toggle() }; resetControlsTimer() }) {
+                    Image(systemName: showCaption ? "text.bubble.fill" : "text.bubble")
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
                 }
             }
-            .buttonStyle(.plain)
+
+            // Next button
+            MediaStreamGlassButton(action: { nextItem(); resetControlsTimer() }) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+            }
         }
     }
 
@@ -787,8 +727,7 @@ public struct MediaGalleryView: View {
                 .textSelection(.enabled)
         }
         .frame(maxHeight: 150) // Limit height to make it scrollable
-        .background(.black.opacity(0.7))
-        .cornerRadius(12)
+        .mediaStreamGlassCard(cornerRadius: 8)
         .padding(.horizontal)
     }
 
