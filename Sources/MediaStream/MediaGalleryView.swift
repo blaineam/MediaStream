@@ -253,7 +253,7 @@ public struct MediaGalleryView: View {
                         // Slide counter on the left
                         Text("\(currentIndex + 1) / \(mediaItems.count)")
                             .font(.caption)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.primary)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                             .mediaStreamGlassCapsule()
@@ -273,7 +273,7 @@ public struct MediaGalleryView: View {
                                 MediaStreamGlassButton(action: { customAction.action(currentIndex); resetControlsTimer() }) {
                                     Image(systemName: customAction.icon)
                                         .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(.white)
+                                        .foregroundStyle(.primary)
                                 }
                             }
 
@@ -281,7 +281,7 @@ public struct MediaGalleryView: View {
                             MediaStreamGlassButton(action: { shareCurrentItem(); resetControlsTimer() }) {
                                 Image(systemName: "square.and.arrow.up")
                                     .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
+                                    .foregroundStyle(.primary)
                             }
 
                             // Close/Back button
@@ -294,7 +294,7 @@ public struct MediaGalleryView: View {
                             }) {
                                 Image(systemName: onBackToGrid != nil ? "arrow.left" : "xmark")
                                     .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
+                                    .foregroundStyle(.primary)
                             }
                         }
                     }
@@ -523,28 +523,28 @@ public struct MediaGalleryView: View {
             MediaStreamGlassButton(action: { previousItem(); resetControlsTimer() }) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundStyle(.primary)
             }
 
             // Shuffle toggle button
             MediaStreamGlassButton(action: { toggleShuffle(); resetControlsTimer() }) {
                 Image(systemName: isShuffled ? "shuffle" : "shuffle")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(isShuffled ? .accentColor : .white)
+                    .foregroundStyle(isShuffled ? Color.accentColor : .primary)
             }
 
             // Loop mode toggle button
             MediaStreamGlassButton(action: { cycleLoopMode(); resetControlsTimer() }) {
                 Image(systemName: loopMode.icon)
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(loopMode == .off ? .white : .accentColor)
+                    .foregroundStyle(loopMode == .off ? .primary : Color.accentColor)
             }
 
             // Slideshow Play/Pause button with duration context menu
             MediaStreamGlassButton(action: { toggleSlideshow(); resetControlsTimer() }, size: 44) {
                 Image(systemName: isSlideshowPlaying ? "stop.fill" : "play.square.fill")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundStyle(.primary)
             }
             .contextMenu {
                 Text("Slideshow Duration")
@@ -603,7 +603,7 @@ public struct MediaGalleryView: View {
                 MediaStreamGlassButton(action: { playbackService.togglePiP(); resetControlsTimer() }) {
                     Image(systemName: playbackService.isPiPActive ? "pip.exit" : "pip.enter")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundStyle(.primary)
                 }
             }
             #endif
@@ -613,7 +613,7 @@ public struct MediaGalleryView: View {
                 MediaStreamGlassButton(action: { withAnimation { showCaption.toggle() }; resetControlsTimer() }) {
                     Image(systemName: showCaption ? "text.bubble.fill" : "text.bubble")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundStyle(.primary)
                 }
             }
 
@@ -621,7 +621,7 @@ public struct MediaGalleryView: View {
             MediaStreamGlassButton(action: { nextItem(); resetControlsTimer() }) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundStyle(.primary)
             }
         }
     }
@@ -721,7 +721,7 @@ public struct MediaGalleryView: View {
         ScrollView {
             Text(caption)
                 .font(.body)
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)

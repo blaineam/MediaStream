@@ -239,7 +239,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
     private var schemeHandler: VideoPlayerSchemeHandler?
 
     /// Background color for the player (matches parent view)
-    public var backgroundColor: PlatformColor = .black {
+    public var backgroundColor: PlatformColor = PlatformColor.adaptiveBackground {
         didSet {
             updateBackgroundColor()
         }
@@ -318,10 +318,10 @@ public class WebViewVideoController: NSObject, ObservableObject {
         }
 
         #if canImport(UIKit)
-        // Match system appearance
+        // Match system appearance with adaptive background
         webView.isOpaque = true
-        webView.backgroundColor = .black
-        webView.scrollView.backgroundColor = .black
+        webView.backgroundColor = PlatformColor.adaptiveBackground
+        webView.scrollView.backgroundColor = PlatformColor.adaptiveBackground
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
@@ -445,6 +445,9 @@ public class WebViewVideoController: NSObject, ObservableObject {
         default: mimeType = "video/mp4"
         }
 
+        // Use the adaptive background color
+        let bgColor = backgroundColor.hexString
+
         return """
         <!DOCTYPE html>
         <html>
@@ -455,7 +458,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 html, body {
                     width: 100%;
                     height: 100%;
-                    background: #000;
+                    background: \(bgColor);
                     overflow: hidden;
                     -webkit-user-select: none;
                     user-select: none;
@@ -464,7 +467,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     width: 100%;
                     height: 100%;
                     object-fit: contain;
-                    background: #000;
+                    background: \(bgColor);
                 }
                 video::-webkit-media-controls { display: none !important; }
                 video::-webkit-media-controls-enclosure { display: none !important; }
@@ -1369,12 +1372,12 @@ public struct CustomWebViewVideoPlayerView: View {
                         MediaStreamGlassButton(action: { controller.togglePlayPause() }) {
                             Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundStyle(.primary)
                         }
 
                         Text(formatTime(isDragging ? scrubPosition : controller.currentTime))
                             .font(.caption)
-                            .foregroundColor(.white)
+                            .foregroundStyle(.primary)
                             .monospacedDigit()
 
                         // Scrub bar with debounced preview
@@ -1412,11 +1415,11 @@ public struct CustomWebViewVideoPlayerView: View {
                             }
                         )
                         .frame(maxWidth: .infinity)
-                        .tint(.white)
+                        .tint(.primary)
 
                         Text(formatTime(controller.duration))
                             .font(.caption)
-                            .foregroundColor(.white)
+                            .foregroundStyle(.primary)
                             .monospacedDigit()
 
                         // Mute button (WKWebView: mute/unmute only, always full volume)
@@ -1425,7 +1428,7 @@ public struct CustomWebViewVideoPlayerView: View {
                         }) {
                             Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundStyle(.primary)
                         }
                     }
                     .padding(.horizontal, 20)
@@ -1495,6 +1498,16 @@ public struct CustomWebViewVideoPlayerView: View {
 // MARK: - Color Helpers
 
 extension PlatformColor {
+    /// System background color that adapts to light/dark mode (cross-platform)
+    static var adaptiveBackground: PlatformColor {
+        #if canImport(UIKit)
+        // Use the system's built-in systemBackground directly
+        return .systemBackground
+        #elseif canImport(AppKit)
+        return NSColor.windowBackgroundColor
+        #endif
+    }
+
     /// Convert color to hex string for CSS
     var hexString: String {
         #if canImport(UIKit)

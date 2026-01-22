@@ -212,12 +212,12 @@ struct CustomVideoPlayerView: View {
                         MediaStreamGlassButton(action: togglePlayPause) {
                             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundStyle(.primary)
                         }
 
                         Text(formatTime(isDragging ? scrubPosition : currentTime))
                             .font(.caption)
-                            .foregroundColor(.white)
+                            .foregroundStyle(.primary)
                             .monospacedDigit()
 
                         Slider(
@@ -241,11 +241,11 @@ struct CustomVideoPlayerView: View {
                                 isDragging = editing
                             }
                         )
-                        .tint(.white)
+                        .tint(.primary)
 
                         Text(formatTime(duration))
                             .font(.caption)
-                            .foregroundColor(.white)
+                            .foregroundStyle(.primary)
                             .monospacedDigit()
 
                         // Volume controls
@@ -261,7 +261,7 @@ struct CustomVideoPlayerView: View {
                                     }
                                 }
                                 .frame(width: 80)
-                                .tint(.white)
+                                .tint(.primary)
                                 .onChange(of: volume) { _, newValue in
                                     player.volume = Float(newValue)
                                     if newValue > 0 && isMuted {
@@ -286,7 +286,7 @@ struct CustomVideoPlayerView: View {
                             }) {
                                 Image(systemName: volumeIcon)
                                     .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
+                                    .foregroundStyle(.primary)
                             }
                             .onLongPressGesture(minimumDuration: 0.3) {
                                 toggleMute()
@@ -644,12 +644,12 @@ struct AudioPlayerControlsView: View {
             MediaStreamGlassButton(action: togglePlayPause) {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundStyle(.primary)
             }
 
             Text(formatTime(isDragging ? scrubPosition : currentTime))
                 .font(.caption)
-                .foregroundColor(.white)
+                .foregroundStyle(.primary)
                 .monospacedDigit()
 
             Slider(
@@ -669,11 +669,11 @@ struct AudioPlayerControlsView: View {
                     isDragging = editing
                 }
             )
-            .tint(.white)
+            .tint(.primary)
 
             Text(formatTime(duration))
                 .font(.caption)
-                .foregroundColor(.white)
+                .foregroundStyle(.primary)
                 .monospacedDigit()
 
             // Volume controls
@@ -686,7 +686,7 @@ struct AudioPlayerControlsView: View {
                         resetVolumeCollapseTimer()
                     }
                     .frame(width: 80)
-                    .tint(.white)
+                    .tint(.primary)
                     .onChange(of: volume) { _, newValue in
                         player.volume = Float(newValue)
                         if newValue > 0 && isMuted {
@@ -709,7 +709,7 @@ struct AudioPlayerControlsView: View {
                 }) {
                     Image(systemName: volumeIcon)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundStyle(.primary)
                 }
             }
         }
@@ -967,7 +967,7 @@ struct VideoPlayerRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
-        view.backgroundColor = .black
+        view.backgroundColor = .systemBackground
 
         let playerLayer = AVPlayerLayer(player: player)
         playerLayer.videoGravity = .resizeAspect
@@ -1057,7 +1057,7 @@ class PlayerView: NSView {
     override func makeBackingLayer() -> CALayer {
         let layer = AVPlayerLayer()
         layer.videoGravity = .resizeAspect
-        layer.backgroundColor = NSColor.black.cgColor
+        layer.backgroundColor = NSColor.windowBackgroundColor.cgColor
         layer.needsDisplayOnBoundsChange = true
         if let player = player {
             layer.player = player
@@ -1224,7 +1224,6 @@ struct ZoomableMediaView: View {
                 VStack {
                     Spacer()
                     ProgressView()
-                        .tint(.white)
                         .padding(.bottom, 80)
                 }
             }
@@ -1234,12 +1233,11 @@ struct ZoomableMediaView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Color.black
+                Color(PlatformColor.adaptiveBackground)
 
                 if isLoading && image == nil && videoURL == nil && animatedImageURL == nil {
                     ProgressView()
                         .scaleEffect(1.5)
-                        .tint(.white)
                 } else {
                     Group {
                         if mediaItem.type == .animatedImage {
@@ -1312,11 +1310,10 @@ struct ZoomableMediaView: View {
 
                                     // Show loading overlay while video loads
                                     if !videoController.isReady {
-                                        Color.black
+                                        Color(PlatformColor.adaptiveBackground)
                                         if isLoading || videoURL != nil {
                                             ProgressView()
                                                 .scaleEffect(1.5)
-                                                .tint(.white)
                                         }
                                     }
                                 }
@@ -1336,11 +1333,10 @@ struct ZoomableMediaView: View {
                             } else {
                                 // Loading state
                                 ZStack {
-                                    Color.black
+                                    Color(PlatformColor.adaptiveBackground)
                                     if isLoading || videoURL != nil {
                                         ProgressView()
                                             .scaleEffect(1.5)
-                                            .tint(.white)
                                     }
                                 }
                             }

@@ -60,26 +60,26 @@ public struct MediaDownloadButton: View {
                     // Download icon
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundStyle(.primary)
 
                 case .partiallyCached:
                     // Partial download icon (shows some are cached)
                     Image(systemName: "arrow.down.circle.dotted")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundStyle(.primary)
 
                 case .downloading:
                     // Progress ring with stop button
                     ZStack {
                         // Background ring
                         Circle()
-                            .stroke(Color.white.opacity(0.3), lineWidth: 2)
+                            .stroke(Color.primary.opacity(0.3), lineWidth: 2)
                             .frame(width: 24, height: 24)
 
                         // Progress ring
                         Circle()
                             .trim(from: 0, to: progressFraction)
-                            .stroke(Color.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .stroke(Color.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                             .frame(width: 24, height: 24)
                             .rotationEffect(.degrees(-90))
                             .animation(.linear(duration: 0.1), value: progressFraction)
@@ -87,7 +87,7 @@ public struct MediaDownloadButton: View {
                         // Stop icon
                         Image(systemName: "stop.fill")
                             .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundStyle(.primary)
                     }
 
                 case .cached:
