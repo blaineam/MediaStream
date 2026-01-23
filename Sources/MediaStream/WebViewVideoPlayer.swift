@@ -445,29 +445,30 @@ public class WebViewVideoController: NSObject, ObservableObject {
         default: mimeType = "video/mp4"
         }
 
-        // Use the adaptive background color
-        let bgColor = backgroundColor.hexString
-
         return """
         <!DOCTYPE html>
         <html>
         <head>
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <meta name="color-scheme" content="light dark">
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 html, body {
                     width: 100%;
                     height: 100%;
-                    background: \(bgColor);
                     overflow: hidden;
                     -webkit-user-select: none;
                     user-select: none;
+                }
+                /* Use CSS system color keyword - adapts to light/dark automatically */
+                html, body, video {
+                    background: Canvas;
+                    background-color: -webkit-named-image(NSWindowBackgroundColor);
                 }
                 video {
                     width: 100%;
                     height: 100%;
                     object-fit: contain;
-                    background: \(bgColor);
                 }
                 video::-webkit-media-controls { display: none !important; }
                 video::-webkit-media-controls-enclosure { display: none !important; }
@@ -1499,12 +1500,31 @@ public struct CustomWebViewVideoPlayerView: View {
 
 extension PlatformColor {
     /// System background color that adapts to light/dark mode (cross-platform)
+    /// Note: On macOS, this checks the current system appearance each time it's called
     static var adaptiveBackground: PlatformColor {
         #if canImport(UIKit)
-        // Use the system's built-in systemBackground directly
         return .systemBackground
         #elseif canImport(AppKit)
-        return NSColor.windowBackgroundColor
+        // Check current appearance and return explicit color
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor(calibratedWhite: 0.12, alpha: 1.0)
+        } else {
+            return NSColor.windowBackgroundColor
+        }
+        #endif
+    }
+
+    /// Returns the appropriate hex color string for the current system appearance
+    /// This always checks the current appearance, not cached values
+    static var adaptiveBackgroundHex: String {
+        #if canImport(UIKit)
+        // iOS uses trait collection which handles this automatically
+        return PlatformColor.systemBackground.hexString
+        #elseif canImport(AppKit)
+        // Explicitly check appearance and return appropriate hex
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? "#1E1E1E" : "#ECECEC"
         #endif
     }
 
@@ -1523,13 +1543,22 @@ extension PlatformColor {
                       Int(green * 255),
                       Int(blue * 255))
         #elseif canImport(AppKit)
-        guard let rgbColor = usingColorSpace(.deviceRGB) else {
-            return "#000000"
+        // Try to resolve the color to RGB
+        if let rgbColor = usingColorSpace(.sRGB) {
+            return String(format: "#%02X%02X%02X",
+                          Int(rgbColor.redComponent * 255),
+                          Int(rgbColor.greenComponent * 255),
+                          Int(rgbColor.blueComponent * 255))
         }
-        return String(format: "#%02X%02X%02X",
-                      Int(rgbColor.redComponent * 255),
-                      Int(rgbColor.greenComponent * 255),
-                      Int(rgbColor.blueComponent * 255))
+        if let rgbColor = usingColorSpace(.deviceRGB) {
+            return String(format: "#%02X%02X%02X",
+                          Int(rgbColor.redComponent * 255),
+                          Int(rgbColor.greenComponent * 255),
+                          Int(rgbColor.blueComponent * 255))
+        }
+        // Fallback: check appearance and use appropriate background color
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? "#1E1E1E" : "#ECECEC"
         #endif
     }
 }

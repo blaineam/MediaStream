@@ -293,9 +293,10 @@ public struct MediaGalleryGridView: View {
                 }
                 #else
                 // macOS: Show filter bar if multiple media types, and multi-select controls
+                // Uses filterBarContent (without glass) since outer HStack provides the glass bar
                 HStack {
                     if !isMultiSelectMode && hasMultipleMediaTypes {
-                        filterBar
+                        filterBarContent
                     } else if isMultiSelectMode {
                         multiSelectControlBar
                     }
@@ -448,7 +449,8 @@ public struct MediaGalleryGridView: View {
         .padding(.bottom, 8)
     }
 
-    private var filterBar: some View {
+    /// Filter bar content - glass bar is applied by parent on macOS, directly on iOS
+    private var filterBarContent: some View {
         HStack(spacing: 12) {
             // Scrollable filter chips
             ScrollView(.horizontal, showsIndicators: false) {
@@ -467,7 +469,12 @@ public struct MediaGalleryGridView: View {
                 .padding(.trailing, 16)
             }
         }
-        .mediaStreamGlassBar()
+    }
+
+    /// Filter bar with glass effect - use on iOS where it's standalone
+    private var filterBar: some View {
+        filterBarContent
+            .mediaStreamGlassBar()
     }
 
     /// Grid content extracted for use in both iOS and macOS layouts

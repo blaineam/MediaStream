@@ -1057,12 +1057,30 @@ class PlayerView: NSView {
     override func makeBackingLayer() -> CALayer {
         let layer = AVPlayerLayer()
         layer.videoGravity = .resizeAspect
-        layer.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer.backgroundColor = currentBackgroundColor
         layer.needsDisplayOnBoundsChange = true
         if let player = player {
             layer.player = player
         }
         return layer
+    }
+
+    /// Get the correct background color for the current appearance
+    private var currentBackgroundColor: CGColor {
+        // Resolve windowBackgroundColor in the current appearance context
+        var resolvedColor: NSColor?
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            resolvedColor = NSColor.windowBackgroundColor
+        }
+
+        // Convert to CGColor - if conversion fails, use appearance-based fallback
+        if let color = resolvedColor, let rgbColor = color.usingColorSpace(.sRGB) {
+            return rgbColor.cgColor
+        }
+
+        // Fallback using system colors
+        let isDark = self.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? NSColor.controlBackgroundColor.cgColor : NSColor.windowBackgroundColor.cgColor
     }
 
     override func layout() {
@@ -1082,11 +1100,23 @@ class PlayerView: NSView {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.frame = bounds
+            layer.backgroundColor = currentBackgroundColor
             CATransaction.commit()
             if let player = player {
                 layer.player = player
                 layer.setNeedsDisplay()
             }
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // Update background color when appearance changes (light/dark mode)
+        if let layer = self.layer as? AVPlayerLayer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.backgroundColor = currentBackgroundColor
+            CATransaction.commit()
         }
     }
 
