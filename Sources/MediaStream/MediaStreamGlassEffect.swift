@@ -34,7 +34,7 @@ struct MediaStreamGlassButton<Label: View>: View {
 // These are in a separate @available extension to ensure compile-time safety
 // when building with older SDKs that don't have the glassEffect API
 
-#if compiler(>=6.1)
+#if swift(>=6.2)
 @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 3.0, *)
 private extension View {
     func applyGlassEffect() -> some View {
@@ -51,7 +51,7 @@ private extension View {
 extension View {
     @ViewBuilder
     func mediaStreamGlassBackground() -> some View {
-        #if compiler(>=6.1)
+        #if swift(>=6.2)
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 3.0, *) {
             self.applyGlassEffect()
         } else {
@@ -70,7 +70,7 @@ extension View {
 
     @ViewBuilder
     func mediaStreamGlassBackgroundRounded() -> some View {
-        #if compiler(>=6.1)
+        #if swift(>=6.2)
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 3.0, *) {
             self.applyGlassEffect()
         } else {
@@ -84,7 +84,7 @@ extension View {
     /// Card-style glass background with smaller corner radius
     @ViewBuilder
     func mediaStreamGlassCard(cornerRadius: CGFloat = 8) -> some View {
-        #if compiler(>=6.1)
+        #if swift(>=6.2)
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 3.0, *) {
             self.applyGlassEffectWithCornerRadius(cornerRadius)
         } else {
@@ -97,7 +97,7 @@ extension View {
 
     @ViewBuilder
     func mediaStreamGlassCapsule() -> some View {
-        #if compiler(>=6.1)
+        #if swift(>=6.2)
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 3.0, *) {
             self.applyGlassEffect()
         } else {
@@ -111,7 +111,7 @@ extension View {
     /// General bar/panel background - uses glassEffect on iOS 26+ or ultraThinMaterial on older versions
     @ViewBuilder
     func mediaStreamGlassBar() -> some View {
-        #if compiler(>=6.1)
+        #if swift(>=6.2)
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 3.0, *) {
             self.applyGlassEffect()
         } else {
