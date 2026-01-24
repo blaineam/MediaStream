@@ -158,17 +158,34 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
     private var playerStatusObserver: NSKeyValueObservation?
     private var cancellables = Set<AnyCancellable>()
 
+    // MARK: - Shared Audio Player (Single Player Architecture)
+
+    /// The single shared audio player for all audio playback
+    /// This avoids creating multiple players and works reliably in background
+    public private(set) var sharedAudioPlayer: AVPlayer?
+    private var sharedAudioTimeObserver: Any?
+    private var sharedAudioItemObserver: NSKeyValueObservation?
+
+    /// The currently loaded media item in the shared audio player
+    @Published public private(set) var currentAudioMediaItem: (any MediaItem)?
+
+    /// Whether we're using the shared audio player (vs external/video players)
+    @Published public private(set) var isUsingSharedAudioPlayer: Bool = false
+
     /// External player reference for direct control (avoids notification delays in background)
     /// Note: This is a STRONG reference to ensure we can control the player even after view recreation.
     /// Views MUST call unregisterExternalPlayer() in onDisappear to prevent memory leaks.
+    /// DEPRECATED: Use sharedAudioPlayer for audio. This is kept for video players only.
     public var externalPlayer: AVPlayer?
 
     /// Players registered by media item ID - allows looking up player for specific tracks
     /// Used for next/previous track control in background
+    /// DEPRECATED: Now only used for video players
     private var playersByMediaId: [UUID: AVPlayer] = [:]
 
     /// Backup reference to all registered players for emergency pause
     /// Used when externalPlayer becomes stale but audio is still playing
+    /// DEPRECATED: Now only used for video players
     private var registeredPlayers: [ObjectIdentifier: AVPlayer] = [:]
 
     // MARK: - PiP
@@ -785,25 +802,32 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
 
-        // In external playback mode, control the external player directly for faster response
+        // In external playback mode, control players directly for faster response
         if externalPlaybackMode {
             var playedAny = false
 
-            // Try direct control first (faster, especially in background)
-            if let extPlayer = externalPlayer {
-                extPlayer.play()
-                print("[MediaPlaybackService] Play (external - direct)")
+            // Priority 1: Use shared audio player if we're using it
+            if isUsingSharedAudioPlayer, let audioPlayer = sharedAudioPlayer {
+                audioPlayer.play()
+                print("[MediaPlaybackService] Play (shared audio player)")
                 playedAny = true
             }
 
-            // Also try registered players as backup (finds players that might be paused)
+            // Priority 2: Try external player (for video)
+            if !playedAny, let extPlayer = externalPlayer, extPlayer !== sharedAudioPlayer {
+                extPlayer.play()
+                print("[MediaPlaybackService] Play (external video player)")
+                playedAny = true
+            }
+
+            // Priority 3: Try registered players as backup (legacy)
             if !playedAny {
                 for (id, player) in registeredPlayers {
                     if player.rate == 0 && player.currentItem != nil {
                         player.play()
                         print("[MediaPlaybackService] Play (registered player \(id))")
                         playedAny = true
-                        break // Only play one
+                        break
                     }
                 }
             }
@@ -811,7 +835,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             // Fall back to notification if still nothing played
             if !playedAny {
                 NotificationCenter.default.post(name: MediaPlaybackService.externalPlayNotification, object: nil)
-                print("[MediaPlaybackService] Play (external - notification fallback)")
+                print("[MediaPlaybackService] Play (notification fallback)")
             }
 
             isPlaying = true
@@ -833,19 +857,25 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
     /// Pause the current media
     public func pause() {
-        // In external playback mode, control the external player directly for faster response
+        // In external playback mode, control players directly for faster response
         if externalPlaybackMode {
             var pausedAny = false
 
-            // Try direct control first (faster, especially in background)
-            if let extPlayer = externalPlayer {
-                extPlayer.pause()
-                print("[MediaPlaybackService] Pause (external - direct)")
+            // Priority 1: Pause shared audio player if active
+            if isUsingSharedAudioPlayer, let audioPlayer = sharedAudioPlayer, audioPlayer.rate > 0 {
+                audioPlayer.pause()
+                print("[MediaPlaybackService] Pause (shared audio player)")
                 pausedAny = true
             }
 
-            // Also pause ALL registered players as backup
-            // This handles cases where externalPlayer reference is stale but old player is still playing
+            // Priority 2: Pause external player (for video)
+            if let extPlayer = externalPlayer, extPlayer !== sharedAudioPlayer, extPlayer.rate > 0 {
+                extPlayer.pause()
+                print("[MediaPlaybackService] Pause (external video player)")
+                pausedAny = true
+            }
+
+            // Priority 3: Pause ALL registered players as backup (legacy)
             for (id, player) in registeredPlayers {
                 if player.rate > 0 {
                     player.pause()
@@ -857,7 +887,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             // If still no players paused, post notification as last resort
             if !pausedAny {
                 NotificationCenter.default.post(name: MediaPlaybackService.externalPauseNotification, object: nil)
-                print("[MediaPlaybackService] Pause (external - notification fallback)")
+                print("[MediaPlaybackService] Pause (notification fallback)")
             }
 
             isPlaying = false
@@ -903,24 +933,33 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
     /// Seek to a specific time
     public func seek(to time: TimeInterval) {
-        // In external playback mode, control registered players directly
+        // In external playback mode, control players directly
         if externalPlaybackMode {
             let cmTime = CMTime(seconds: time, preferredTimescale: 600)
             var seekedAny = false
 
-            // Try direct control on externalPlayer first
-            if let extPlayer = externalPlayer {
-                extPlayer.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
-                print("[MediaPlaybackService] Seek to \(time) (external - direct)")
+            // Priority 1: Seek on shared audio player if active
+            if isUsingSharedAudioPlayer, let audioPlayer = sharedAudioPlayer {
+                audioPlayer.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                print("[MediaPlaybackService] Seek to \(time) (shared audio player)")
                 seekedAny = true
             }
 
-            // Also seek on all registered players that have content
-            for (id, player) in registeredPlayers {
-                if player.currentItem != nil {
-                    player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
-                    print("[MediaPlaybackService] Seek to \(time) (registered player \(id))")
-                    seekedAny = true
+            // Priority 2: Seek on external player (for video)
+            if let extPlayer = externalPlayer, extPlayer !== sharedAudioPlayer {
+                extPlayer.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                print("[MediaPlaybackService] Seek to \(time) (external video player)")
+                seekedAny = true
+            }
+
+            // Priority 3: Seek on registered players as backup (legacy)
+            if !seekedAny {
+                for (id, player) in registeredPlayers {
+                    if player.currentItem != nil {
+                        player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                        print("[MediaPlaybackService] Seek to \(time) (registered player \(id))")
+                        seekedAny = true
+                    }
                 }
             }
 
@@ -931,7 +970,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                     object: nil,
                     userInfo: ["time": time]
                 )
-                print("[MediaPlaybackService] Seek to \(time) (external - notification fallback)")
+                print("[MediaPlaybackService] Seek to \(time) (notification fallback)")
             }
 
             currentTime = time
@@ -986,30 +1025,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             // Get the next media item
             let nextItem = playlist[nextIndex]
             let nextMediaItem = nextItem.mediaItem
-            let nextMediaId = nextMediaItem.id
-
-            // In external mode, pause current player and try to play the next one
-            if externalPlaybackMode {
-                // Pause current player only (not all players)
-                externalPlayer?.pause()
-
-                // Try to find and play the next track's player directly
-                if let nextPlayer = playersByMediaId[nextMediaId] {
-                    #if canImport(UIKit)
-                    try? AVAudioSession.sharedInstance().setActive(true)
-                    #endif
-                    nextPlayer.seek(to: .zero) // Start from beginning
-                    nextPlayer.play()
-                    externalPlayer = nextPlayer
-                    print("[MediaPlaybackService] Next track: directly playing player for \(nextMediaId)")
-                } else {
-                    // No player registered - create one on demand for background playback
-                    print("[MediaPlaybackService] Next track: creating player on demand for \(nextMediaId)")
-                    Task {
-                        await createAndPlayOnDemand(mediaItem: nextMediaItem)
-                    }
-                }
-            }
+            let isAudio = nextMediaItem.type == .audio
 
             currentIndex = nextIndex
             if isShuffled, let pos = shuffledIndices.firstIndex(of: nextIndex) {
@@ -1017,55 +1033,29 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             }
             onTrackChanged?(nextIndex)
 
-            // In external playback mode, also notify via notification (for view updates)
+            // In external mode, use shared audio player for audio, video players for video
             if externalPlaybackMode {
+                // Pause current playback
+                sharedAudioPlayer?.pause()
+                externalPlayer?.pause()
+
+                // Post notification for view updates (gallery will switch to this index)
                 NotificationCenter.default.post(
                     name: MediaPlaybackService.externalTrackChangedNotification,
                     object: nil,
                     userInfo: ["index": nextIndex]
                 )
-                print("[MediaPlaybackService] Next track -> index \(nextIndex)")
+                print("[MediaPlaybackService] Next track -> index \(nextIndex) (audio: \(isAudio))")
 
-                // Update Now Playing for the new track with full metadata
-                let isNextVideo = nextMediaItem.type == .video
-                Task {
-                    // Load actual metadata from the media item
-                    let metadata = await nextMediaItem.getAudioMetadata()
-                    let artwork = await nextMediaItem.loadImage()
-
-                    // Get title from metadata, or fall back to original filename (not cache path)
-                    var title = metadata?.title
-                    if title == nil || title?.isEmpty == true {
-                        if let sourceURL = nextMediaItem.sourceURL {
-                            title = sourceURL.deletingPathExtension().lastPathComponent
-                        } else if let cacheKey = nextMediaItem.diskCacheKey {
-                            // Last resort: use cache key but try to extract original name
-                            title = URL(fileURLWithPath: cacheKey).deletingPathExtension().lastPathComponent
-                        }
+                if isAudio {
+                    // Use the shared audio player - handles loading, playing, and metadata
+                    Task {
+                        await loadAudioInSharedPlayer(mediaItem: nextMediaItem, autoplay: true)
                     }
-
-                    // Get duration from player if available
-                    var duration: TimeInterval = 0
-                    if let player = playersByMediaId[nextMediaId],
-                       let item = player.currentItem {
-                        let dur = CMTimeGetSeconds(item.duration)
-                        if dur.isFinite && dur > 0 {
-                            duration = dur
-                        }
-                    }
-
-                    await MainActor.run {
-                        updateNowPlayingForExternalPlayer(
-                            mediaItem: nextMediaItem,
-                            title: title,
-                            artist: metadata?.artist,
-                            album: metadata?.album,
-                            artwork: artwork,
-                            duration: duration,
-                            isVideo: isNextVideo
-                        )
-                    }
-                    print("[MediaPlaybackService] Updated Now Playing for next track: \(title ?? "unknown")")
+                } else {
+                    // Video: let the gallery view handle it (needs view for display)
+                    // Just notify and the view will create its player when it appears
+                    print("[MediaPlaybackService] Next track is video - gallery will handle playback")
                 }
             } else {
                 Task {
@@ -1206,30 +1196,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             // Get the prev media item
             let prevItem = playlist[prevIndex]
             let prevMediaItem = prevItem.mediaItem
-            let prevMediaId = prevMediaItem.id
-
-            // In external mode, pause current player and try to play the prev one
-            if externalPlaybackMode {
-                // Pause current player only (not all players)
-                externalPlayer?.pause()
-
-                // Try to find and play the prev track's player directly
-                if let prevPlayer = playersByMediaId[prevMediaId] {
-                    #if canImport(UIKit)
-                    try? AVAudioSession.sharedInstance().setActive(true)
-                    #endif
-                    prevPlayer.seek(to: .zero) // Start from beginning
-                    prevPlayer.play()
-                    externalPlayer = prevPlayer
-                    print("[MediaPlaybackService] Previous track: directly playing player for \(prevMediaId)")
-                } else {
-                    // No player registered - create one on demand for background playback
-                    print("[MediaPlaybackService] Previous track: creating player on demand for \(prevMediaId)")
-                    Task {
-                        await createAndPlayOnDemand(mediaItem: prevMediaItem)
-                    }
-                }
-            }
+            let isAudio = prevMediaItem.type == .audio
 
             currentIndex = prevIndex
             if isShuffled, let pos = shuffledIndices.firstIndex(of: prevIndex) {
@@ -1237,57 +1204,28 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             }
             onTrackChanged?(prevIndex)
 
-            // In external playback mode, also notify via notification (for view updates)
+            // In external mode, use shared audio player for audio, video players for video
             if externalPlaybackMode {
+                // Pause current playback
+                sharedAudioPlayer?.pause()
+                externalPlayer?.pause()
+
+                // Post notification for view updates (gallery will switch to this index)
                 NotificationCenter.default.post(
                     name: MediaPlaybackService.externalTrackChangedNotification,
                     object: nil,
                     userInfo: ["index": prevIndex]
                 )
-                print("[MediaPlaybackService] Previous track -> index \(prevIndex)")
-                // Update Now Playing for the new track with full metadata
-                if prevIndex < playlist.count {
-                    let prevItem = playlist[prevIndex]
-                    let prevMediaItem = prevItem.mediaItem
-                    let isPrevVideo = prevMediaItem.type == .video
+                print("[MediaPlaybackService] Previous track -> index \(prevIndex) (audio: \(isAudio))")
+
+                if isAudio {
+                    // Use the shared audio player - handles loading, playing, and metadata
                     Task {
-                        // Load actual metadata from the media item
-                        let metadata = await prevMediaItem.getAudioMetadata()
-                        let artwork = await prevMediaItem.loadImage()
-
-                        // Get title from metadata, or fall back to original filename
-                        var title = metadata?.title
-                        if title == nil || title?.isEmpty == true {
-                            if let sourceURL = prevMediaItem.sourceURL {
-                                title = sourceURL.deletingPathExtension().lastPathComponent
-                            } else if let cacheKey = prevMediaItem.diskCacheKey {
-                                title = URL(fileURLWithPath: cacheKey).deletingPathExtension().lastPathComponent
-                            }
-                        }
-
-                        // Get duration from player if available
-                        var duration: TimeInterval = 0
-                        if let player = playersByMediaId[prevMediaId],
-                           let item = player.currentItem {
-                            let dur = CMTimeGetSeconds(item.duration)
-                            if dur.isFinite && dur > 0 {
-                                duration = dur
-                            }
-                        }
-
-                        await MainActor.run {
-                            updateNowPlayingForExternalPlayer(
-                                mediaItem: prevMediaItem,
-                                title: title,
-                                artist: metadata?.artist,
-                                album: metadata?.album,
-                                artwork: artwork,
-                                duration: duration,
-                                isVideo: isPrevVideo
-                            )
-                        }
-                        print("[MediaPlaybackService] Updated Now Playing for previous track: \(title ?? "unknown")")
+                        await loadAudioInSharedPlayer(mediaItem: prevMediaItem, autoplay: true)
                     }
+                } else {
+                    // Video: let the gallery view handle it (needs view for display)
+                    print("[MediaPlaybackService] Previous track is video - gallery will handle playback")
                 }
             } else {
                 Task {
@@ -1454,41 +1392,57 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    // MARK: - External Player Integration
+    // MARK: - Shared Audio Player Management
 
-    /// Create and play a player on demand for background playback
-    /// This is used when switching tracks and the target track's player doesn't exist yet
-    private func createAndPlayOnDemand(mediaItem: any MediaItem) async {
-        // Only works for cached media
-        guard MediaDownloadManager.shared.isCached(mediaItem: mediaItem) else {
-            print("[MediaPlaybackService] Cannot create on-demand player - media not cached")
-            return
+    /// Load and play an audio item using the shared audio player
+    /// This is the primary method for audio playback - uses a single reusable player
+    public func loadAudioInSharedPlayer(mediaItem: any MediaItem, autoplay: Bool = true) async {
+        // Get URL - prefer cached, fall back to source
+        var audioURL: URL?
+
+        if MediaDownloadManager.shared.isCached(mediaItem: mediaItem) {
+            audioURL = MediaDownloadManager.shared.localURL(for: mediaItem)
+            print("[MediaPlaybackService] Loading cached audio: \(audioURL?.lastPathComponent ?? "unknown")")
+        } else if let sourceURL = mediaItem.sourceURL {
+            audioURL = sourceURL
+            print("[MediaPlaybackService] Loading remote audio: \(sourceURL.lastPathComponent)")
+        } else if let videoURL = await mediaItem.loadVideoURL() {
+            // Some audio items return URL via loadVideoURL
+            audioURL = videoURL
+            print("[MediaPlaybackService] Loading audio via loadVideoURL: \(videoURL.lastPathComponent)")
         }
 
-        guard let localURL = MediaDownloadManager.shared.localURL(for: mediaItem) else {
-            print("[MediaPlaybackService] Cannot create on-demand player - no local URL")
+        guard let url = audioURL else {
+            print("[MediaPlaybackService] Cannot load audio - no URL available")
             return
         }
-
-        // Create player
-        let playerItem = AVPlayerItem(url: localURL)
-        let newPlayer = AVPlayer(playerItem: playerItem)
 
         await MainActor.run {
             #if canImport(UIKit)
             try? AVAudioSession.sharedInstance().setActive(true)
             #endif
 
-            // Register the player
-            registerExternalPlayer(newPlayer, forMediaId: mediaItem.id)
+            // Create shared player if needed
+            if sharedAudioPlayer == nil {
+                sharedAudioPlayer = AVPlayer()
+                setupSharedAudioPlayerObservers()
+                print("[MediaPlaybackService] Created shared audio player")
+            }
 
-            // Start playing
-            newPlayer.play()
-            externalPlayer = newPlayer
-            isPlaying = true
-            playbackState = .playing
+            // Replace the current item
+            let newItem = AVPlayerItem(url: url)
+            sharedAudioPlayer?.replaceCurrentItem(with: newItem)
+            currentAudioMediaItem = mediaItem
+            isUsingSharedAudioPlayer = true
+            externalPlayer = sharedAudioPlayer  // Keep compatibility
 
-            print("[MediaPlaybackService] Created and playing on-demand player for \(mediaItem.id)")
+            if autoplay {
+                sharedAudioPlayer?.play()
+                isPlaying = true
+                playbackState = .playing
+            }
+
+            print("[MediaPlaybackService] Loaded audio in shared player: \(url.lastPathComponent)")
         }
 
         // Load and update metadata
@@ -1507,10 +1461,11 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         await MainActor.run {
             var mediaDuration: TimeInterval = 0
-            if let item = newPlayer.currentItem {
+            if let item = sharedAudioPlayer?.currentItem {
                 let dur = CMTimeGetSeconds(item.duration)
                 if dur.isFinite && dur > 0 {
                     mediaDuration = dur
+                    duration = mediaDuration
                 }
             }
 
@@ -1521,9 +1476,102 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                 album: metadata?.album,
                 artwork: artwork,
                 duration: mediaDuration,
-                isVideo: mediaItem.type == .video
+                isVideo: false
             )
         }
+    }
+
+    /// Setup observers for the shared audio player
+    private func setupSharedAudioPlayerObservers() {
+        guard let player = sharedAudioPlayer else { return }
+
+        // Remove existing observer
+        if let observer = sharedAudioTimeObserver {
+            player.removeTimeObserver(observer)
+            sharedAudioTimeObserver = nil
+        }
+
+        // Add periodic time observer
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+        sharedAudioTimeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            Task { @MainActor in
+                guard let self = self, self.isUsingSharedAudioPlayer else { return }
+
+                let seconds = CMTimeGetSeconds(time)
+                if seconds.isFinite {
+                    self.currentTime = seconds
+                }
+
+                // Update duration if available
+                if let item = player.currentItem {
+                    let dur = CMTimeGetSeconds(item.duration)
+                    if dur.isFinite && dur > 0 && self.duration != dur {
+                        self.duration = dur
+                    }
+                }
+
+                // Update playing state
+                self.isPlaying = player.rate > 0
+                self.updateNowPlayingTimeOnly()
+            }
+        }
+
+        // Observe item end
+        sharedAudioItemObserver = player.observe(\.currentItem?.status) { [weak self] player, _ in
+            if player.currentItem?.status == .readyToPlay {
+                print("[MediaPlaybackService] Shared audio player ready to play")
+            }
+        }
+
+        // Handle playback completion
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                guard let self = self,
+                      self.isUsingSharedAudioPlayer,
+                      let item = notification.object as? AVPlayerItem,
+                      item == self.sharedAudioPlayer?.currentItem else { return }
+
+                print("[MediaPlaybackService] Shared audio player finished track")
+                self.handleTrackCompletion()
+            }
+        }
+    }
+
+    /// Handle when the current track finishes playing
+    private func handleTrackCompletion() {
+        // Check loop mode
+        if loopMode == .one {
+            // Loop the current track
+            sharedAudioPlayer?.seek(to: .zero)
+            sharedAudioPlayer?.play()
+            return
+        }
+
+        // Move to next track
+        nextTrack()
+    }
+
+    /// Get the shared audio player's current state
+    public var sharedAudioPlayerState: (isPlaying: Bool, currentTime: TimeInterval, duration: TimeInterval) {
+        guard let player = sharedAudioPlayer else {
+            return (false, 0, 0)
+        }
+        let time = CMTimeGetSeconds(player.currentTime())
+        let dur = player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? 0
+        return (player.rate > 0, time.isFinite ? time : 0, dur.isFinite ? dur : 0)
+    }
+
+    // MARK: - External Player Integration (Legacy - for video players)
+
+    /// Create and play a player on demand for background playback
+    /// DEPRECATED: Use loadAudioInSharedPlayer instead
+    private func createAndPlayOnDemand(mediaItem: any MediaItem) async {
+        // Now just delegates to the shared player
+        await loadAudioInSharedPlayer(mediaItem: mediaItem, autoplay: true)
     }
 
     /// Update Now Playing info for media being played by an external player (e.g., the gallery view).

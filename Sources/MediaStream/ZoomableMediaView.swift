@@ -1712,27 +1712,7 @@ struct ZoomableMediaView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-            // Sync view state with actual player state when returning from background
-            // This ensures in-app controls reflect the correct playback position
-            guard isCurrentSlide else { return }
-
-            if let player = audioPlayer {
-                let playerTime = CMTimeGetSeconds(player.currentTime())
-                let playerRate = player.rate
-                if playerTime.isFinite {
-                    currentTime = playerTime
-                }
-                isPlaying = playerRate > 0
-                print("[ZoomableMediaView] Synced audio state on foreground: time=\(playerTime), playing=\(isPlaying)")
-            } else if let player = videoPlayer {
-                let playerTime = CMTimeGetSeconds(player.currentTime())
-                let playerRate = player.rate
-                if playerTime.isFinite {
-                    currentTime = playerTime
-                }
-                isPlaying = playerRate > 0
-                print("[ZoomableMediaView] Synced video state on foreground: time=\(playerTime), playing=\(isPlaying)")
-            }
+            syncStateOnForeground()
         }
         #endif
         .onDisappear {
@@ -1759,17 +1739,35 @@ struct ZoomableMediaView: View {
             videoPlayer = nil
             useWebViewForVideo = false
 
-            // Unregister and clean up audio player
-            if let player = audioPlayer {
+            // For audio: DON'T pause or clean up the shared player - it should keep running
+            // Just clear our local reference. The shared player is managed by MediaPlaybackService.
+            if let player = audioPlayer, player !== MediaPlaybackService.shared.sharedAudioPlayer {
+                // Only unregister if it's NOT the shared player (legacy video player)
                 MediaPlaybackService.shared.unregisterExternalPlayer(player, forMediaId: mediaItem.id)
+                player.pause()
             }
-            audioPlayer?.pause()
             audioPlayer = nil
 
             // Fully destroy controllers to release WKWebView memory
             videoController.destroy()
             animatedImageController.destroy()
 
+        }
+    }
+
+    /// Sync view state with player state when returning from background
+    private func syncStateOnForeground() {
+        guard isCurrentSlide else { return }
+
+        // Audio state is managed by AudioPlayerControlsView via its time observer on the shared player
+        // Video state syncing handled here
+        if mediaItem.type == .video, let player = videoPlayer {
+            let playerTime = CMTimeGetSeconds(player.currentTime())
+            let playerRate = player.rate
+            print("[ZoomableMediaView] Video state on foreground: time=\(playerTime), playing=\(playerRate > 0)")
+        } else if mediaItem.type == .audio {
+            let state = MediaPlaybackService.shared.sharedAudioPlayerState
+            print("[ZoomableMediaView] Audio state from shared player on foreground: time=\(state.currentTime), playing=\(state.isPlaying)")
         }
     }
 
@@ -2014,34 +2012,25 @@ struct ZoomableMediaView: View {
             // Mark as loaded even without artwork (placeholder will show)
             hasLoadedMedia = true
 
-            // Check local cache first for background playback support
-            let localURL = await MainActor.run(body: { MediaDownloadManager.shared.localURL(for: mediaItem) })
-            print("[ZoomableMediaView] Audio cache check - diskCacheKey: \(diskCacheKey ?? "nil"), localURL: \(localURL?.path ?? "nil")")
+            // Use the shared audio player from MediaPlaybackService
+            // This avoids creating multiple players and works reliably in background
+            let isCached = MediaDownloadManager.shared.isCached(mediaItem: mediaItem)
+            print("[ZoomableMediaView] Audio - cached: \(isCached), isCurrentSlide: \(isCurrentSlide)")
 
-            if let localURL = localURL, FileManager.default.fileExists(atPath: localURL.path) {
-                // Use local cached file
-                print("[ZoomableMediaView] ✅ Using CACHED audio file: \(localURL.path)")
+            // If this is the current slide and should play, load into shared player
+            if isCurrentSlide {
+                await MediaPlaybackService.shared.loadAudioInSharedPlayer(
+                    mediaItem: mediaItem,
+                    autoplay: isSlideshowPlaying
+                )
+                // Reference the shared player for UI compatibility
                 await MainActor.run {
-                    let playerItem = AVPlayerItem(url: localURL)
-                    let player = AVPlayer(playerItem: playerItem)
-                    audioPlayer = player
+                    audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
                 }
-            } else if let url = await mediaItem.loadAudioURL() {
-                // Fall back to remote URL
-                print("[ZoomableMediaView] ⚠️ Using REMOTE audio URL: \(url)")
-                // For local files, verify the file exists
-                if url.isFileURL {
-                    guard FileManager.default.fileExists(atPath: url.path) else {
-                        return
-                    }
-                }
-
-                await MainActor.run {
-                    // Create AVPlayer for audio playback
-                    let playerItem = AVPlayerItem(url: url)
-                    let player = AVPlayer(playerItem: playerItem)
-                    audioPlayer = player
-                }
+                print("[ZoomableMediaView] ✅ Loaded audio into shared player")
+            } else {
+                // Not current slide - don't load yet, will load when becomes current
+                print("[ZoomableMediaView] Audio not current slide, deferring load")
             }
         }
     }
