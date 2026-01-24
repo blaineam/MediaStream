@@ -1003,7 +1003,11 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                     externalPlayer = nextPlayer
                     print("[MediaPlaybackService] Next track: directly playing player for \(nextMediaId)")
                 } else {
-                    print("[MediaPlaybackService] Next track: no player registered for \(nextMediaId), posting notification")
+                    // No player registered - create one on demand for background playback
+                    print("[MediaPlaybackService] Next track: creating player on demand for \(nextMediaId)")
+                    Task {
+                        await createAndPlayOnDemand(mediaItem: nextMediaItem)
+                    }
                 }
             }
 
@@ -1022,23 +1026,46 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                 )
                 print("[MediaPlaybackService] Next track -> index \(nextIndex)")
 
-                // Update Now Playing for the new track
+                // Update Now Playing for the new track with full metadata
                 let isNextVideo = nextMediaItem.type == .video
                 Task {
-                    // Load title from cache key or filename
-                    var title: String? = nil
-                    if let cacheKey = nextMediaItem.diskCacheKey {
-                        title = URL(fileURLWithPath: cacheKey).deletingPathExtension().lastPathComponent
+                    // Load actual metadata from the media item
+                    let metadata = await nextMediaItem.getAudioMetadata()
+                    let artwork = await nextMediaItem.loadImage()
+
+                    // Get title from metadata, or fall back to original filename (not cache path)
+                    var title = metadata?.title
+                    if title == nil || title?.isEmpty == true {
+                        if let sourceURL = nextMediaItem.sourceURL {
+                            title = sourceURL.deletingPathExtension().lastPathComponent
+                        } else if let cacheKey = nextMediaItem.diskCacheKey {
+                            // Last resort: use cache key but try to extract original name
+                            title = URL(fileURLWithPath: cacheKey).deletingPathExtension().lastPathComponent
+                        }
                     }
-                    await updateNowPlayingForExternalPlayer(
-                        mediaItem: nextMediaItem,
-                        title: title,
-                        artist: nil,
-                        album: nil,
-                        artwork: nil,
-                        duration: 0,
-                        isVideo: isNextVideo
-                    )
+
+                    // Get duration from player if available
+                    var duration: TimeInterval = 0
+                    if let player = playersByMediaId[nextMediaId],
+                       let item = player.currentItem {
+                        let dur = CMTimeGetSeconds(item.duration)
+                        if dur.isFinite && dur > 0 {
+                            duration = dur
+                        }
+                    }
+
+                    await MainActor.run {
+                        updateNowPlayingForExternalPlayer(
+                            mediaItem: nextMediaItem,
+                            title: title,
+                            artist: metadata?.artist,
+                            album: metadata?.album,
+                            artwork: artwork,
+                            duration: duration,
+                            isVideo: isNextVideo
+                        )
+                    }
+                    print("[MediaPlaybackService] Updated Now Playing for next track: \(title ?? "unknown")")
                 }
             } else {
                 Task {
@@ -1196,7 +1223,11 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                     externalPlayer = prevPlayer
                     print("[MediaPlaybackService] Previous track: directly playing player for \(prevMediaId)")
                 } else {
-                    print("[MediaPlaybackService] Previous track: no player registered for \(prevMediaId), posting notification")
+                    // No player registered - create one on demand for background playback
+                    print("[MediaPlaybackService] Previous track: creating player on demand for \(prevMediaId)")
+                    Task {
+                        await createAndPlayOnDemand(mediaItem: prevMediaItem)
+                    }
                 }
             }
 
@@ -1214,25 +1245,48 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                     userInfo: ["index": prevIndex]
                 )
                 print("[MediaPlaybackService] Previous track -> index \(prevIndex)")
-                // Update Now Playing for the new track
+                // Update Now Playing for the new track with full metadata
                 if prevIndex < playlist.count {
                     let prevItem = playlist[prevIndex]
                     let prevMediaItem = prevItem.mediaItem
                     let isPrevVideo = prevMediaItem.type == .video
                     Task {
-                        var title: String? = nil
-                        if let cacheKey = prevMediaItem.diskCacheKey {
-                            title = URL(fileURLWithPath: cacheKey).deletingPathExtension().lastPathComponent
+                        // Load actual metadata from the media item
+                        let metadata = await prevMediaItem.getAudioMetadata()
+                        let artwork = await prevMediaItem.loadImage()
+
+                        // Get title from metadata, or fall back to original filename
+                        var title = metadata?.title
+                        if title == nil || title?.isEmpty == true {
+                            if let sourceURL = prevMediaItem.sourceURL {
+                                title = sourceURL.deletingPathExtension().lastPathComponent
+                            } else if let cacheKey = prevMediaItem.diskCacheKey {
+                                title = URL(fileURLWithPath: cacheKey).deletingPathExtension().lastPathComponent
+                            }
                         }
-                        await updateNowPlayingForExternalPlayer(
-                            mediaItem: prevMediaItem,
-                            title: title,
-                            artist: nil,
-                            album: nil,
-                            artwork: nil,
-                            duration: 0,
-                            isVideo: isPrevVideo
-                        )
+
+                        // Get duration from player if available
+                        var duration: TimeInterval = 0
+                        if let player = playersByMediaId[prevMediaId],
+                           let item = player.currentItem {
+                            let dur = CMTimeGetSeconds(item.duration)
+                            if dur.isFinite && dur > 0 {
+                                duration = dur
+                            }
+                        }
+
+                        await MainActor.run {
+                            updateNowPlayingForExternalPlayer(
+                                mediaItem: prevMediaItem,
+                                title: title,
+                                artist: metadata?.artist,
+                                album: metadata?.album,
+                                artwork: artwork,
+                                duration: duration,
+                                isVideo: isPrevVideo
+                            )
+                        }
+                        print("[MediaPlaybackService] Updated Now Playing for previous track: \(title ?? "unknown")")
                     }
                 }
             } else {
@@ -1401,6 +1455,76 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
     }
 
     // MARK: - External Player Integration
+
+    /// Create and play a player on demand for background playback
+    /// This is used when switching tracks and the target track's player doesn't exist yet
+    private func createAndPlayOnDemand(mediaItem: any MediaItem) async {
+        // Only works for cached media
+        guard MediaDownloadManager.shared.isCached(mediaItem: mediaItem) else {
+            print("[MediaPlaybackService] Cannot create on-demand player - media not cached")
+            return
+        }
+
+        guard let localURL = MediaDownloadManager.shared.localURL(for: mediaItem) else {
+            print("[MediaPlaybackService] Cannot create on-demand player - no local URL")
+            return
+        }
+
+        // Create player
+        let playerItem = AVPlayerItem(url: localURL)
+        let newPlayer = AVPlayer(playerItem: playerItem)
+
+        await MainActor.run {
+            #if canImport(UIKit)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            #endif
+
+            // Register the player
+            registerExternalPlayer(newPlayer, forMediaId: mediaItem.id)
+
+            // Start playing
+            newPlayer.play()
+            externalPlayer = newPlayer
+            isPlaying = true
+            playbackState = .playing
+
+            print("[MediaPlaybackService] Created and playing on-demand player for \(mediaItem.id)")
+        }
+
+        // Load and update metadata
+        let metadata = await mediaItem.getAudioMetadata()
+        let artwork = await mediaItem.loadImage()
+
+        var title = metadata?.title
+        if title == nil || title?.isEmpty == true {
+            if let sourceURL = mediaItem.sourceURL {
+                title = sourceURL.deletingPathExtension().lastPathComponent
+            }
+        }
+
+        // Wait briefly for duration to be available
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
+        await MainActor.run {
+            var mediaDuration: TimeInterval = 0
+            if let item = newPlayer.currentItem {
+                let dur = CMTimeGetSeconds(item.duration)
+                if dur.isFinite && dur > 0 {
+                    mediaDuration = dur
+                }
+            }
+
+            updateNowPlayingForExternalPlayer(
+                mediaItem: mediaItem,
+                title: title,
+                artist: metadata?.artist,
+                album: metadata?.album,
+                artwork: artwork,
+                duration: mediaDuration,
+                isVideo: mediaItem.type == .video
+            )
+        }
+    }
 
     /// Update Now Playing info for media being played by an external player (e.g., the gallery view).
     /// Call this when the view starts playing a new media item.
