@@ -1394,6 +1394,13 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        // iOS 16+: Also set playback state for better Now Playing integration
+        #if canImport(UIKit)
+        if #available(iOS 16.0, *) {
+            MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        }
+        #endif
     }
 
     // MARK: - Shared Audio Player Management
@@ -1640,6 +1647,13 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        // iOS 16+: Also set playback state
+        #if canImport(UIKit)
+        if #available(iOS 16.0, *) {
+            MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        }
+        #endif
     }
 
     /// Notify that external playback has stopped.
