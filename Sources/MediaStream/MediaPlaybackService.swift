@@ -1443,6 +1443,9 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         if let currentItem = currentAudioMediaItem, isSameMediaContent(currentItem, mediaItem) {
             print("[MediaPlaybackService] ♻️ Audio already in shared player (same content), skipping reload")
 
+            // Ensure external playback mode is enabled for remote commands
+            externalPlaybackMode = true
+
             // Handle seek position restoration if requested
             if let position = seekToPosition, position > 0 {
                 let cmTime = CMTime(seconds: position, preferredTimescale: 600)
@@ -1499,6 +1502,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             currentAudioMediaItem = mediaItem
             isUsingSharedAudioPlayer = true
             externalPlayer = sharedAudioPlayer  // Keep compatibility
+            externalPlaybackMode = true  // Enable external playback mode for remote commands
 
             // Setup end-of-track observer for this specific item
             setupItemEndObserver(for: newItem)
