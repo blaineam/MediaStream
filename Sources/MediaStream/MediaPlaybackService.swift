@@ -890,12 +890,10 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             }
 
             // Priority 3: Pause ALL registered players as backup (legacy)
-            for (id, player) in registeredPlayers {
-                if player.rate > 0 {
-                    player.pause()
-                    print("[MediaPlaybackService] Pause (registered player \(id))")
-                    pausedAny = true
-                }
+            for (id, player) in registeredPlayers where player.rate > 0 {
+                player.pause()
+                print("[MediaPlaybackService] Pause (registered player \(id))")
+                pausedAny = true
             }
 
             // If still no players paused, post notification as last resort
@@ -968,12 +966,10 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
             // Priority 3: Seek on registered players as backup (legacy)
             if !seekedAny {
-                for (id, player) in registeredPlayers {
-                    if player.currentItem != nil {
-                        player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
-                        print("[MediaPlaybackService] Seek to \(time) (registered player \(id))")
-                        seekedAny = true
-                    }
+                for (id, player) in registeredPlayers where player.currentItem != nil {
+                    player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                    print("[MediaPlaybackService] Seek to \(time) (registered player \(id))")
+                    seekedAny = true
                 }
             }
 
