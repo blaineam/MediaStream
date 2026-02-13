@@ -1553,11 +1553,48 @@ struct ZoomableMediaView: View {
                     }
                 }
             } else if mediaItem.type == .audio {
-                if !newValue && oldValue {
+                if newValue && !oldValue {
+                    // When this slide becomes current, load audio if not already loaded
+                    if audioPlayer == nil {
+                        Task {
+                            // Check if the shared audio player is already playing this item
+                            let sharedPlayerAlreadyHasThisItem = await MainActor.run {
+                                if let currentItem = MediaPlaybackService.shared.currentAudioMediaItem {
+                                    // Compare by content, not UUID
+                                    if let key1 = currentItem.diskCacheKey, let key2 = mediaItem.diskCacheKey {
+                                        return key1 == key2
+                                    }
+                                    if let url1 = currentItem.sourceURL, let url2 = mediaItem.sourceURL {
+                                        return url1.absoluteString == url2.absoluteString
+                                    }
+                                    return currentItem.id == mediaItem.id
+                                }
+                                return false
+                            }
+
+                            if sharedPlayerAlreadyHasThisItem {
+                                // Already loaded - just reference the player
+                                print("[ZoomableMediaView] ♻️ Shared player already has this item, reusing")
+                                await MainActor.run {
+                                    audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
+                                }
+                            } else {
+                                // Load fresh into shared player
+                                await MediaPlaybackService.shared.loadAudioInSharedPlayer(
+                                    mediaItem: mediaItem,
+                                    autoplay: false  // Don't autoplay when manually navigating
+                                )
+                                await MainActor.run {
+                                    audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
+                                }
+                                print("[ZoomableMediaView] ✅ Loaded audio when slide became current")
+                            }
+                        }
+                    }
+                } else if !newValue && oldValue {
                     // When navigating away from this slide, pause the audio
                     audioPlayer?.pause()
                 }
-                // Audio doesn't need "show first frame" - it just plays or pauses
             } else if mediaItem.type == .animatedImage && useWebViewForAnimatedImage {
                 if newValue && !oldValue {
                     // Became current slide - start animation
