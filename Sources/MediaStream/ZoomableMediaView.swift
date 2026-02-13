@@ -2076,31 +2076,29 @@ struct ZoomableMediaView: View {
                 return false
             }
 
-            // If this is the current slide and should play, load into shared player
-            if isCurrentSlide {
-                if sharedPlayerAlreadyHasThisItem {
-                    // Already loaded - just reference the player, don't reload
-                    print("[ZoomableMediaView] ♻️ Shared player already has this item (same content), reusing")
-                    await MainActor.run {
-                        audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
-                    }
-                } else {
-                    // Load fresh into shared player
-                    // MediaPlaybackService.loadAudioInSharedPlayer has its own content-based check
-                    // that will skip reload if the same content is already loaded
-                    await MediaPlaybackService.shared.loadAudioInSharedPlayer(
-                        mediaItem: mediaItem,
-                        autoplay: isSlideshowPlaying
-                    )
-                    // Reference the shared player for UI compatibility
-                    await MainActor.run {
-                        audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
-                    }
-                    print("[ZoomableMediaView] ✅ Loaded audio into shared player")
+            // Load audio player - don't check isCurrentSlide to avoid race condition
+            // The onChange(of: isCurrentSlide) handler will load if this view wasn't current initially
+            if sharedPlayerAlreadyHasThisItem {
+                // Already loaded - just reference the player, don't reload
+                print("[ZoomableMediaView] ♻️ Shared player already has this item (same content), reusing")
+                await MainActor.run {
+                    audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
                 }
+            } else if isCurrentSlide {
+                // Only load fresh if this is the current slide (avoid loading all audio files at once)
+                print("[ZoomableMediaView] 🎵 Loading audio (loadMedia)")
+                await MediaPlaybackService.shared.loadAudioInSharedPlayer(
+                    mediaItem: mediaItem,
+                    autoplay: isSlideshowPlaying
+                )
+                // Reference the shared player for UI compatibility
+                await MainActor.run {
+                    audioPlayer = MediaPlaybackService.shared.sharedAudioPlayer
+                }
+                print("[ZoomableMediaView] ✅ Loaded audio into shared player")
             } else {
-                // Not current slide - don't load yet, will load when becomes current
-                print("[ZoomableMediaView] Audio not current slide, deferring load")
+                // Not current slide initially - onChange handler will load when it becomes current
+                print("[ZoomableMediaView] Audio not current slide initially, will load via onChange")
             }
         }
     }

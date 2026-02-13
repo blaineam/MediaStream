@@ -1469,6 +1469,10 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         } else if let sourceURL = mediaItem.sourceURL {
             audioURL = sourceURL
             print("[MediaPlaybackService] Loading remote audio: \(sourceURL.lastPathComponent)")
+        } else if let audioLoadedURL = await mediaItem.loadAudioURL() {
+            // Load audio URL dynamically (for remote files that generate URLs on demand)
+            audioURL = audioLoadedURL
+            print("[MediaPlaybackService] Loading audio via loadAudioURL: \(audioLoadedURL.lastPathComponent)")
         } else if let videoURL = await mediaItem.loadVideoURL() {
             // Some audio items return URL via loadVideoURL
             audioURL = videoURL
