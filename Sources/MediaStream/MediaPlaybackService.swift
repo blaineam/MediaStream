@@ -1480,6 +1480,9 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             return
         }
 
+        // Get auth headers before MainActor.run (async operation)
+        let headers = await MediaStreamConfiguration.headersAsync(for: url)
+
         await MainActor.run {
             #if canImport(UIKit)
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -1494,7 +1497,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
             // Replace the current item - create AVURLAsset with auth headers for remote files
             let asset: AVURLAsset
-            if let headers = await MediaStreamConfiguration.headersAsync(for: url), !headers.isEmpty {
+            if let headers = headers, !headers.isEmpty {
                 // Remote file requiring authentication
                 asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
                 print("[MediaPlaybackService] Loading audio with auth headers")
