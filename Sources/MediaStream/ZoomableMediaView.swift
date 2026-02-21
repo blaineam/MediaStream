@@ -128,6 +128,13 @@ struct AnimatedImageRepresentable: NSViewRepresentable {
         imageView.image = image
         imageView.animates = true // Enable animation for animated images
         imageView.canDrawSubviewsIntoLayer = true
+        // Prevent NSImageView from enforcing the image's pixel dimensions as its
+        // intrinsic size. Without this, the view fights SwiftUI's layout system
+        // and may render at screen/image resolution instead of the window size.
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return imageView
     }
 
@@ -136,7 +143,9 @@ struct AnimatedImageRepresentable: NSViewRepresentable {
             nsView.image = image
         }
         nsView.animates = true
-        nsView.frame = CGRect(origin: .zero, size: containerSize)
+        // Do not set nsView.frame manually — SwiftUI's .frame() modifier on this
+        // representable controls the size. Setting it here can conflict with layout
+        // updates during window resize.
     }
 }
 #endif
@@ -1390,19 +1399,13 @@ struct ZoomableMediaView: View {
                         if mediaItem.type == .animatedImage {
                             #if canImport(UIKit)
                             if useWebViewForAnimatedImage, let url = animatedImageURL {
-                                // Use WKWebView for memory-efficient animated image display
-                                // Browser handles GIF decoding/caching internally
-                                // Wrap in ZStack with contentShape so gestures work while WebView doesn't steal touches
-                                ZStack {
-                                    WebViewAnimatedImageRepresentable(controller: animatedImageController)
-                                        .allowsHitTesting(false)  // WebView shouldn't steal touches
-                                }
-                                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
-                                .contentShape(Rectangle())  // Enable hit testing on the container
-                                .scaleEffect(scale)
-                                .offset(offset)
-                                .gesture(createMagnificationGesture(in: geometry))
-                                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                                // Native CGImageSource animated image display
+                                WebViewAnimatedImageRepresentable(controller: animatedImageController)
+                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                                    .scaleEffect(scale)
+                                    .offset(offset)
+                                    .gesture(createMagnificationGesture(in: geometry))
+                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
                             } else if useStreaming, let url = animatedImageURL {
                                 // Legacy: streaming view for large GIFs
                                 StreamingAnimatedImageRepresentable(url: url, containerSize: geometry.size)
@@ -1417,8 +1420,15 @@ struct ZoomableMediaView: View {
                                     .gesture(createMagnificationGesture(in: geometry))
                                     .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
                             }
-                            #else
-                            if let image = image {
+                            #else  // macOS — native CGImageSource rendering (no WKWebView)
+                            if useWebViewForAnimatedImage {
+                                WebViewAnimatedImageRepresentable(controller: animatedImageController)
+                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                                    .scaleEffect(scale)
+                                    .offset(offset)
+                                    .gesture(createMagnificationGesture(in: geometry))
+                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                            } else if let image = image {
                                 AnimatedImageView(image: image, scale: scale, offset: offset)
                                     .gesture(createMagnificationGesture(in: geometry))
                                     .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
@@ -1756,9 +1766,9 @@ struct ZoomableMediaView: View {
         #endif
         .onDisappear {
             // Critical: Release memory when view disappears to prevent OOM
-            // Delete temp GIF files if they exist
+            // Delete temp animated image files if they exist
             if let tempURL = animatedImageURL,
-               tempURL.path.contains("streaming_") || tempURL.path.contains("webview_gif_") {
+               tempURL.path.contains("streaming_") || tempURL.path.contains("webview_animated_") {
                 try? FileManager.default.removeItem(at: tempURL)
             }
 
@@ -1787,7 +1797,7 @@ struct ZoomableMediaView: View {
             }
             audioPlayer = nil
 
-            // Fully destroy controllers to release WKWebView memory
+            // Fully destroy controllers to release resources
             videoController.destroy()
             animatedImageController.destroy()
 
@@ -1831,7 +1841,28 @@ struct ZoomableMediaView: View {
 
         switch mediaItem.type {
         case .image:
+            // Capture the type BEFORE loading — for unresolved webp/heic, loadImage()
+            // downloads the data and resolves _animationStorage as a side effect.
+            let preloadType = mediaItem.type
             if let loadedImage = await mediaItem.loadImage() {
+                // If an unresolved format just resolved to animated during loadImage(),
+                // switch to animated WKWebView display instead of showing a static frame.
+                if preloadType == .image && mediaItem.type == .animatedImage,
+                   let animURL = await mediaItem.loadAnimatedImageURL() {
+                    animatedImageURL = animURL
+                    useWebViewForAnimatedImage = true
+                    hasLoadedMedia = true
+                    await MainActor.run {
+                        animatedImageController.load(url: animURL)
+                        if isCurrentSlide {
+                            Task {
+                                try? await Task.sleep(nanoseconds: 100_000_000)
+                                animatedImageController.startAnimating()
+                            }
+                        }
+                    }
+                    return
+                }
                 // Downsample large images to prevent OOM with 40MB+ files
                 // A 8000x6000 image decodes to ~192MB - with 3 visible, that's 576MB causing OOM
                 // Downsample to maxDisplayPixelSize for display; full resolution only for sharing
@@ -1844,21 +1875,16 @@ struct ZoomableMediaView: View {
             // Browser handles GIF frame decoding/caching internally
             // Check sourceURL first (simplest), then loadAnimatedImageURL(), then loadAnimatedImageData()
             if let url = mediaItem.sourceURL {
-                // Direct URL - just load in WebView, no downloading/decoding needed
+                // Direct URL - load natively
                 animatedImageURL = url
                 useWebViewForAnimatedImage = true
                 hasLoadedMedia = true
 
                 await MainActor.run {
-                    if animatedImageController.webView == nil {
-                        _ = animatedImageController.createWebView()
-                    }
                     animatedImageController.load(url: url)
-                    // Start animation if this is the current slide
                     if isCurrentSlide {
-                        // Small delay to let WebView load
                         Task {
-                            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                            try? await Task.sleep(nanoseconds: 100_000_000)
                             animatedImageController.startAnimating()
                         }
                     }
@@ -1869,9 +1895,6 @@ struct ZoomableMediaView: View {
                 hasLoadedMedia = true
 
                 await MainActor.run {
-                    if animatedImageController.webView == nil {
-                        _ = animatedImageController.createWebView()
-                    }
                     animatedImageController.load(url: url)
                     if isCurrentSlide {
                         Task {
@@ -1881,9 +1904,10 @@ struct ZoomableMediaView: View {
                     }
                 }
             } else if let data = await mediaItem.loadAnimatedImageData() {
-                // Save data to temp file for WebView
+                // Save data to temp file with correct extension for CGImageSource
+                let ext = Self.detectAnimatedImageExtension(from: data)
                 let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("webview_gif_\(UUID().uuidString).gif")
+                    .appendingPathComponent("webview_animated_\(UUID().uuidString).\(ext)")
                 try? data.write(to: tempURL)
 
                 animatedImageURL = tempURL
@@ -1891,9 +1915,6 @@ struct ZoomableMediaView: View {
                 hasLoadedMedia = true
 
                 await MainActor.run {
-                    if animatedImageController.webView == nil {
-                        _ = animatedImageController.createWebView()
-                    }
                     animatedImageController.load(url: tempURL)
                     if isCurrentSlide {
                         Task {
@@ -1906,16 +1927,13 @@ struct ZoomableMediaView: View {
                 // No URL or Data - fall back to loadImage()
                 if let loadedImage = await mediaItem.loadImage() {
                     if let frames = loadedImage.images, frames.count > StreamingAnimatedImageView.streamingThreshold {
-                        // Large GIF - save to temp file and use WebView
+                        // Large GIF - save to temp file for native rendering
                         if let tempURL = AnimatedImageHelper.createTempGIFForStreaming(from: loadedImage) {
                             animatedImageURL = tempURL
                             useWebViewForAnimatedImage = true
                             hasLoadedMedia = true
 
                             await MainActor.run {
-                                if animatedImageController.webView == nil {
-                                    _ = animatedImageController.createWebView()
-                                }
                                 animatedImageController.load(url: tempURL)
                                 if isCurrentSlide {
                                     Task {
@@ -1938,8 +1956,59 @@ struct ZoomableMediaView: View {
                 }
             }
             #else
-            // macOS doesn't need streaming (handles animated images differently)
-            if let loadedImage = await mediaItem.loadImage() {
+            // macOS: native CGImageSource rendering for animated images.
+            // Supports GIF, APNG, WebP, HEIC — no WKWebView needed.
+            // Priority: sourceURL → loadAnimatedImageURL() → loadAnimatedImageData() → static fallback.
+            if let url = mediaItem.sourceURL {
+                animatedImageURL = url
+                useWebViewForAnimatedImage = true
+                hasLoadedMedia = true
+
+                await MainActor.run {
+                    animatedImageController.load(url: url)
+                    if isCurrentSlide {
+                        Task {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            animatedImageController.startAnimating()
+                        }
+                    }
+                }
+            } else if let url = await mediaItem.loadAnimatedImageURL() {
+                animatedImageURL = url
+                useWebViewForAnimatedImage = true
+                hasLoadedMedia = true
+
+                await MainActor.run {
+                    animatedImageController.load(url: url)
+                    if isCurrentSlide {
+                        Task {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            animatedImageController.startAnimating()
+                        }
+                    }
+                }
+            } else if let data = await mediaItem.loadAnimatedImageData() {
+                // Write to temp file with correct extension for CGImageSource
+                let ext = Self.detectAnimatedImageExtension(from: data)
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("webview_animated_\(UUID().uuidString).\(ext)")
+                try? data.write(to: tempURL)
+
+                animatedImageURL = tempURL
+                useWebViewForAnimatedImage = true
+                hasLoadedMedia = true
+
+                await MainActor.run {
+                    animatedImageController.load(url: tempURL)
+                    if isCurrentSlide {
+                        Task {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            animatedImageController.startAnimating()
+                        }
+                    }
+                }
+            } else if let loadedImage = await mediaItem.loadImage() {
+                // Fallback: load as static image
                 image = loadedImage
                 hasLoadedMedia = true
             }
@@ -2218,6 +2287,20 @@ struct ZoomableMediaView: View {
                 offset = constrainOffset(offset, in: geometry)
             }
         }
+    }
+
+    /// Detect the appropriate file extension for animated image data by inspecting the
+    /// image source type via ImageIO. Used to create temp files with correct extensions
+    /// so WKWebView serves the right MIME type (WebP bytes in a .gif file won't display).
+    private static func detectAnimatedImageExtension(from data: Data) -> String {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let utType = CGImageSourceGetType(source) as String? else {
+            return "gif"
+        }
+        if utType.contains("webp") { return "webp" }
+        if utType.contains("heic") || utType.contains("heif") { return "heic" }
+        if utType.contains("png") { return "png" }
+        return "gif"
     }
 
     /// Downsample large images to prevent OOM when viewing many large files.

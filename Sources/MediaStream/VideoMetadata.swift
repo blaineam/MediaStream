@@ -27,8 +27,8 @@ public enum VideoMetadata {
     ///   - url: URL to the video file (local or remote URL)
     ///   - timeout: Maximum time to wait for metadata (default: 10 seconds)
     /// - Returns: Duration in seconds, or nil if unable to determine
-    public static func getVideoDurationWebView(from url: URL, timeout: TimeInterval = 10) async -> TimeInterval? {
-        return await WebViewVideoController.getVideoDuration(from: url, headers: nil)
+    public static func getVideoDurationWebView(from url: URL, headers: [String: String]? = nil, timeout: TimeInterval = 10) async -> TimeInterval? {
+        return await WebViewVideoController.getVideoDuration(from: url, headers: headers)
     }
 
     /// Get video duration, trying AVFoundation first then falling back to WebView
@@ -59,7 +59,7 @@ public enum VideoMetadata {
         }
 
         // Fall back to WebView for unsupported formats (WebM, etc.)
-        return await getVideoDurationWebView(from: url, timeout: 10)
+        return await getVideoDurationWebView(from: url, headers: headers, timeout: 10)
     }
 
     // MARK: - Audio Track Detection
@@ -70,8 +70,8 @@ public enum VideoMetadata {
     ///   - url: URL to the video file (local or remote URL)
     ///   - timeout: Maximum time to wait for metadata (default: 10 seconds)
     /// - Returns: True if video has audio, false if silent
-    public static func hasAudioTrackWebView(url: URL, timeout: TimeInterval = 10) async -> Bool {
-        return await WebViewVideoController.hasAudioTrack(url: url, headers: nil)
+    public static func hasAudioTrackWebView(url: URL, headers: [String: String]? = nil, timeout: TimeInterval = 10) async -> Bool {
+        return await WebViewVideoController.hasAudioTrack(url: url, headers: headers)
     }
 
     /// Check if video has audio tracks, trying AVFoundation first then falling back to WebView
@@ -100,7 +100,7 @@ public enum VideoMetadata {
         }
 
         // Fall back to WebView for unsupported formats (WebM, etc.)
-        return await hasAudioTrackWebView(url: url, timeout: 10)
+        return await hasAudioTrackWebView(url: url, headers: headers, timeout: 10)
     }
 
     // MARK: - Combined Metadata
@@ -145,8 +145,8 @@ public enum VideoMetadata {
         }
 
         // Use WebView for formats AVFoundation doesn't support
-        async let durationTask = getVideoDurationWebView(from: url, timeout: timeout)
-        async let audioTask = hasAudioTrackWebView(url: url, timeout: timeout)
+        async let durationTask = getVideoDurationWebView(from: url, headers: headers, timeout: timeout)
+        async let audioTask = hasAudioTrackWebView(url: url, headers: headers, timeout: timeout)
 
         let duration = await durationTask
         let hasAudio = await audioTask

@@ -465,6 +465,12 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     background: Canvas;
                     background-color: -webkit-named-image(NSWindowBackgroundColor);
                 }
+                @media (prefers-color-scheme: dark) {
+                    html, body, video { background-color: #1c1c1e; }
+                }
+                @media (prefers-color-scheme: light) {
+                    html, body, video { background-color: #ffffff; }
+                }
                 video {
                     width: 100%;
                     height: 100%;
@@ -481,19 +487,10 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 const video = document.getElementById('player');
                 let hasNotifiedReady = false;
 
-                console.log('Video player init, src:', video.src);
-
-                // Check codec support
-                const canPlayWebmVP9 = video.canPlayType('video/webm; codecs="vp9"');
-                const canPlayWebmVP8 = video.canPlayType('video/webm; codecs="vp8"');
-                const canPlayMP4 = video.canPlayType('video/mp4; codecs="avc1.42E01E"');
-                console.log('Codec support - VP9:', canPlayWebmVP9, 'VP8:', canPlayWebmVP8, 'H264:', canPlayMP4);
-
                 function notifyReady() {
                     if (hasNotifiedReady) return;
                     if (video.duration > 0) {
                         hasNotifiedReady = true;
-                        console.log('Video ready - dimensions: ' + video.videoWidth + 'x' + video.videoHeight + ', duration: ' + video.duration);
                         window.webkit.messageHandlers.videoReady.postMessage({
                             duration: video.duration,
                             hasAudio: true
@@ -508,7 +505,6 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     // Seek to show first frame as preview (iOS needs this for proper thumbnail display)
                     if (video.currentTime === 0 && video.paused) {
                         video.currentTime = 0.1;
-                        console.log('Seeking to 0.1s for first frame preview');
                     }
                 });
 
@@ -522,43 +518,21 @@ public class WebViewVideoController: NSObject, ObservableObject {
                     window.webkit.messageHandlers.videoError.postMessage({ error: msg });
                 });
 
-                // Debug events for playback issues
-                video.addEventListener('stalled', () => console.log('Video STALLED - network issues'));
-                video.addEventListener('waiting', () => console.log('Video WAITING - buffering'));
-                video.addEventListener('suspend', () => console.log('Video SUSPEND - download suspended'));
-                video.addEventListener('playing', () => console.log('Video PLAYING event fired, currentTime: ' + video.currentTime));
-                video.addEventListener('timeupdate', () => {
-                    if (video.currentTime > 0 && video.currentTime < 0.5) {
-                        console.log('Video timeupdate: ' + video.currentTime);
-                    }
-                });
-
                 // Exposed functions for Swift to call
                 window.videoPlay = () => {
-                    console.log('videoPlay called, paused: ' + video.paused + ', readyState: ' + video.readyState + ', muted: ' + video.muted);
                     video.play().then(() => {
-                        console.log('Play started successfully, currentTime: ' + video.currentTime);
                         window.webkit.messageHandlers.videoState.postMessage({ playing: true, currentTime: video.currentTime });
                     }).catch(e => {
                         console.log('Play failed: ' + e.name + ' - ' + e.message);
                         window.webkit.messageHandlers.videoError.postMessage({ error: 'Play failed: ' + e.message });
                     });
                 };
-                window.videoPause = () => {
-                    console.log('videoPause called, paused:', video.paused);
-                    video.pause();
-                    console.log('Video now paused:', video.paused);
-                };
+                window.videoPause = () => { video.pause(); };
                 window.videoSeek = (time) => { video.currentTime = time; };
                 window.videoSetVolume = (vol) => {
-                    const newVol = Math.max(0, Math.min(1, vol));
-                    video.volume = newVol;
-                    console.log('Volume set to:', video.volume);
+                    video.volume = Math.max(0, Math.min(1, vol));
                 };
-                window.videoSetMuted = (muted) => {
-                    video.muted = muted;
-                    console.log('Muted set to:', video.muted);
-                };
+                window.videoSetMuted = (muted) => { video.muted = muted; };
                 window.videoGetState = () => ({
                     currentTime: video.currentTime,
                     duration: video.duration || 0,
@@ -619,29 +593,15 @@ public class WebViewVideoController: NSObject, ObservableObject {
     // MARK: - Playback Control (mirrors VLCPlayerController interface)
 
     public func play() {
-        guard let webView = webView else {
-            print("WebViewVideoPlayer: No webView for play()")
-            return
-        }
-        webView.evaluateJavaScript("window.videoPlay()") { _, error in
-            if let error = error {
-                print("WebViewVideoPlayer: play() error - \(error.localizedDescription)")
-            }
-        }
+        guard let webView = webView else { return }
+        webView.evaluateJavaScript("window.videoPlay()")
         isPlaying = true
         didReachEnd = false
     }
 
     public func pause() {
-        guard let webView = webView else {
-            print("WebViewVideoPlayer: No webView for pause()")
-            return
-        }
-        webView.evaluateJavaScript("window.videoPause()") { _, error in
-            if let error = error {
-                print("WebViewVideoPlayer: pause() error - \(error.localizedDescription)")
-            }
-        }
+        guard let webView = webView else { return }
+        webView.evaluateJavaScript("window.videoPause()")
         isPlaying = false
     }
 
@@ -741,28 +701,14 @@ public class WebViewVideoController: NSObject, ObservableObject {
     /// Generate a thumbnail from the current video frame using JavaScript canvas
     /// This captures the frame directly in the WebView without needing view hierarchy tricks
     public func generateThumbnail(size: CGSize) async -> PlatformImage? {
-        guard let webView = webView, isReady else {
-            print("WebViewVideoPlayer: generateThumbnail failed - webView=\(webView != nil), isReady=\(isReady)")
-            return nil
-        }
+        guard let webView = webView, isReady else { return nil }
 
         // Use JavaScript to capture the video frame to a canvas and return as base64
         let captureJS = """
             (function() {
                 const v = document.getElementById('player');
-                if (!v) {
-                    console.log('Thumbnail capture: No video element');
-                    return { error: 'no_element' };
-                }
-                if (v.readyState < 2) {
-                    console.log('Thumbnail capture: Video not ready, readyState=' + v.readyState);
-                    return { error: 'not_ready', readyState: v.readyState };
-                }
-
-                // Check if VP9 is supported (it often isn't in WKWebView)
-                const vp9Support = v.canPlayType('video/webm; codecs="vp9"');
-                const vp8Support = v.canPlayType('video/webm; codecs="vp8"');
-                console.log('Thumbnail capture: VP9=' + vp9Support + ', VP8=' + vp8Support + ', dims=' + v.videoWidth + 'x' + v.videoHeight);
+                if (!v) return { error: 'no_element' };
+                if (v.readyState < 2) return { error: 'not_ready', readyState: v.readyState };
 
                 const canvas = document.createElement('canvas');
                 const targetWidth = \(Int(size.width));
@@ -774,7 +720,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
 
-                // Check if the canvas has any non-transparent pixels (VP9 might draw black)
+                // Check if the canvas has any non-transparent pixels
                 try {
                     const imageData = ctx.getImageData(0, 0, Math.min(10, canvas.width), Math.min(10, canvas.height));
                     let hasContent = false;
@@ -784,18 +730,11 @@ public class WebViewVideoController: NSObject, ObservableObject {
                             break;
                         }
                     }
-                    console.log('Thumbnail capture: Canvas has content=' + hasContent);
-                } catch(e) {
-                    console.log('Thumbnail capture: getImageData failed (CORS?):', e.message);
-                }
+                } catch(e) { /* ignore getImageData errors */ }
 
                 try {
-                    // Return as JPEG base64 (smaller than PNG)
-                    const dataURL = canvas.toDataURL('image/jpeg', 0.85);
-                    console.log('Thumbnail capture: dataURL length=' + dataURL.length);
-                    return dataURL;
+                    return canvas.toDataURL('image/jpeg', 0.85);
                 } catch(e) {
-                    console.log('Canvas toDataURL failed:', e.message);
                     return { error: 'toDataURL_failed', message: e.message };
                 }
             })()
@@ -803,50 +742,33 @@ public class WebViewVideoController: NSObject, ObservableObject {
 
         return await withCheckedContinuation { continuation in
             webView.evaluateJavaScript(captureJS) { result, error in
-                if let error = error {
-                    print("WebViewVideoPlayer: JS thumbnail error - \(error.localizedDescription)")
+                guard error == nil else {
                     continuation.resume(returning: nil)
                     return
                 }
 
                 // Check for error object
-                if let errorDict = result as? [String: Any], let errorType = errorDict["error"] as? String {
-                    print("WebViewVideoPlayer: JS thumbnail error: \(errorType) - \(errorDict)")
+                if result is [String: Any] {
                     continuation.resume(returning: nil)
                     return
                 }
 
                 guard let dataURL = result as? String,
                       dataURL.hasPrefix("data:image/jpeg;base64,") else {
-                    let resultType = type(of: result as Any)
-                    let preview = (result as? String)?.prefix(100) ?? "nil"
-                    print("WebViewVideoPlayer: JS thumbnail returned invalid data - type: \(resultType), preview: \(preview)")
                     continuation.resume(returning: nil)
                     return
                 }
 
-                // Extract base64 data and decode to image
                 let base64String = String(dataURL.dropFirst("data:image/jpeg;base64,".count))
                 guard let imageData = Data(base64Encoded: base64String) else {
-                    print("WebViewVideoPlayer: Failed to decode base64 image data")
                     continuation.resume(returning: nil)
                     return
                 }
 
                 #if canImport(UIKit)
-                if let image = UIImage(data: imageData) {
-                    continuation.resume(returning: image)
-                } else {
-                    print("WebViewVideoPlayer: Failed to create UIImage from data")
-                    continuation.resume(returning: nil)
-                }
+                continuation.resume(returning: UIImage(data: imageData))
                 #elseif canImport(AppKit)
-                if let image = NSImage(data: imageData) {
-                    continuation.resume(returning: image)
-                } else {
-                    print("WebViewVideoPlayer: Failed to create NSImage from data")
-                    continuation.resume(returning: nil)
-                }
+                continuation.resume(returning: NSImage(data: imageData))
                 #endif
             }
         }
@@ -1095,11 +1017,7 @@ public class WebViewVideoController: NSObject, ObservableObject {
                         if (v.currentTime === 0 || v.currentTime > 1) {
                             v.currentTime = 0.1;
                         }
-                        v.play().then(() => {
-                            console.log('Play started for thumbnail, readyState=' + v.readyState);
-                        }).catch(e => {
-                            console.log('Play failed for thumbnail: ' + e.message);
-                        });
+                        v.play().catch(e => {});
                         return { status: 'ok', readyState: v.readyState, currentTime: v.currentTime };
                     })()
                 """
@@ -1213,9 +1131,7 @@ extension WebViewVideoController: WKScriptMessageHandler {
                 self.isReady = false
 
             case "consoleLog":
-                if let msg = message.body as? String {
-                    print("WebViewVideoPlayer JS: \(msg)")
-                }
+                break
 
             case "videoState":
                 if let body = message.body as? [String: Any] {

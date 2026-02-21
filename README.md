@@ -62,9 +62,9 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
 
 ### 🎬 Video & Animation Improvements (v1.2.0)
 - **WKWebView Video Player**: Memory-efficient HTML5 video playback supporting WebM, MP4, and more
-- **WebView Animated Images**: Large GIFs display via WKWebView without loading all frames into memory
+- **Native Animated Images**: CGImageSource + display link rendering with LRU frame cache
 - **sourceURL Property**: Direct URL loading for animated images without intermediate decoding
-- **Improved Gesture Support**: Full zoom/pan support for WebView-based animated images
+- **Improved Gesture Support**: Full zoom/pan support for animated images on macOS and iOS
 - **Simplified Audio Controls**: Mute/unmute toggle with persistent state between videos
 
 ### 🎵 Audio Support (v1.6.0)
@@ -100,6 +100,16 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
   - Bulk download/clear in grid view
   - Integrates with "Clear Cache" to remove downloaded media
 
+### 🎞️ Native Animated Image Rendering & WebP Support (v1.9.0)
+- **Native CGImageSource Rendering**: Replaced WKWebView-based animated image display with native frame-by-frame rendering via `CGImageSource` + display link (`CADisplayLink` on iOS, `Timer` on macOS)
+- **Animated WebP Support**: Full frame duration extraction via `kCGImagePropertyWebPDictionary` across all animated image helpers
+- **LRU Frame Cache**: 4-frame sliding window cache for memory-efficient playback
+- **Accurate Frame Timing**: `CACurrentMediaTime()` for smooth animation without dropped or doubled frames
+- **Improved macOS Gesture Support**: Native `NSView` rendering eliminates WKWebView scroll event conflicts — zoom/pan gestures work correctly
+- **Thumbnail Load Cancellation**: Grid thumbnails cancel in-flight downloads when views disappear (e.g., gallery dismiss)
+- **Media Type Re-filtering**: Grid automatically re-checks filter chips when WebP/HEIC items resolve their actual animation state after download
+- **Video Metadata Auth Headers**: `getVideoDurationWebView` and `hasAudioTrackWebView` now pass auth headers through to the WebView fallback
+
 ### 📷 RAW Image Support
 - **Native RAW Support**: Leverages iOS/macOS ImageIO for RAW image formats
 - **Supported Formats**: DNG, CR2, CR3, NEF, ARW, ORF, RW2, and other camera RAW formats
@@ -124,7 +134,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/blaineam/MediaStream.git", from: "1.7.0")
+    .package(url: "https://github.com/blaineam/MediaStream.git", from: "1.9.0")
 ]
 ```
 

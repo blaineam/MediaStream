@@ -152,6 +152,12 @@ public class StreamingAnimatedImageView: UIView {
             if let delay = pngProperties[kCGImagePropertyAPNGDelayTime as String] as? TimeInterval, delay > 0 {
                 duration = delay
             }
+        } else if let webpProperties = properties[kCGImagePropertyWebPDictionary as String] as? [String: Any] {
+            if let delay = webpProperties[kCGImagePropertyWebPUnclampedDelayTime as String] as? TimeInterval, delay > 0 {
+                duration = delay
+            } else if let delay = webpProperties[kCGImagePropertyWebPDelayTime as String] as? TimeInterval, delay > 0 {
+                duration = delay
+            }
         }
 
         return max(duration, 0.01) // Minimum 10ms
@@ -290,6 +296,12 @@ public struct AnimatedImageHelper {
                     if let delayTime = pngProperties[kCGImagePropertyAPNGDelayTime as String] as? TimeInterval, delayTime > 0 {
                         frameDuration = delayTime
                     }
+                } else if let webpProperties = properties[kCGImagePropertyWebPDictionary as String] as? [String: Any] {
+                    if let delayTime = webpProperties[kCGImagePropertyWebPUnclampedDelayTime as String] as? TimeInterval, delayTime > 0 {
+                        frameDuration = delayTime
+                    } else if let delayTime = webpProperties[kCGImagePropertyWebPDelayTime as String] as? TimeInterval, delayTime > 0 {
+                        frameDuration = delayTime
+                    }
                 }
             }
             totalDuration += max(frameDuration, 0.01) // Minimum 10ms per frame
@@ -339,17 +351,28 @@ public struct AnimatedImageHelper {
         var totalDuration: TimeInterval = 0
 
         for i in 0..<count {
-            guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, i, nil) as? [String: Any],
-                  let gifProperties = properties[kCGImagePropertyGIFDictionary as String] as? [String: Any] else {
+            guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, i, nil) as? [String: Any] else {
                 continue
             }
 
             var frameDuration: TimeInterval = 0.1
 
-            if let delayTime = gifProperties[kCGImagePropertyGIFUnclampedDelayTime as String] as? TimeInterval, delayTime > 0 {
-                frameDuration = delayTime
-            } else if let delayTime = gifProperties[kCGImagePropertyGIFDelayTime as String] as? TimeInterval {
-                frameDuration = delayTime
+            if let gifProperties = properties[kCGImagePropertyGIFDictionary as String] as? [String: Any] {
+                if let delayTime = gifProperties[kCGImagePropertyGIFUnclampedDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                } else if let delayTime = gifProperties[kCGImagePropertyGIFDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                }
+            } else if let pngProperties = properties[kCGImagePropertyPNGDictionary as String] as? [String: Any] {
+                if let delayTime = pngProperties[kCGImagePropertyAPNGDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                }
+            } else if let webpProperties = properties[kCGImagePropertyWebPDictionary as String] as? [String: Any] {
+                if let delayTime = webpProperties[kCGImagePropertyWebPUnclampedDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                } else if let delayTime = webpProperties[kCGImagePropertyWebPDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                }
             }
 
             totalDuration += frameDuration
@@ -387,6 +410,12 @@ public struct AnimatedImageHelper {
             } else if let pngProperties = properties[kCGImagePropertyPNGDictionary as String] as? [String: Any],
                       let delayTime = pngProperties[kCGImagePropertyAPNGDelayTime as String] as? TimeInterval {
                 frameDuration = delayTime
+            } else if let webpProperties = properties[kCGImagePropertyWebPDictionary as String] as? [String: Any] {
+                if let delayTime = webpProperties[kCGImagePropertyWebPUnclampedDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                } else if let delayTime = webpProperties[kCGImagePropertyWebPDelayTime as String] as? TimeInterval, delayTime > 0 {
+                    frameDuration = delayTime
+                }
             } else if let heicProperties = properties["{HEICS}" as String] as? [String: Any],
                       let delayTime = heicProperties["DelayTime" as String] as? TimeInterval {
                 frameDuration = delayTime

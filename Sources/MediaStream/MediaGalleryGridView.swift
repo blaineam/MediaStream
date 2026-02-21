@@ -496,6 +496,13 @@ public struct MediaGalleryGridView: View {
                     },
                     onHidden: { itemId in
                         handleItemHidden(itemId: itemId)
+                    },
+                    onTypeResolved: { _ in
+                        // webp/heic resolved to actual type after download;
+                        // re-check media types and re-filter so badges and
+                        // filter chips reflect the verified animation state.
+                        checkMediaTypes()
+                        applyFilters()
                     }
                 )
                 .id("\(item.id)-\(refreshID)")  // Combined ID forces recreation on refresh
@@ -905,10 +912,14 @@ struct LazyThumbnailView: View {
     var showSelection: Bool = false
     var onVisible: ((UUID) -> Void)? = nil
     var onHidden: ((UUID) -> Void)? = nil
+    /// Called after thumbnail loads if the item's MediaType changed (e.g., webp/heic
+    /// resolved from .image → .animatedImage). Use to trigger grid re-filter.
+    var onTypeResolved: ((UUID) -> Void)? = nil
 
     @State private var thumbnail: PlatformImage?
     @State private var isLoading = false
     @State private var hasAppeared = false
+    @State private var loadTask: Task<Void, Never>? = nil
 
     var body: some View {
         GeometryReader { geometry in
@@ -1014,6 +1025,10 @@ struct LazyThumbnailView: View {
         }
         .onDisappear {
             onHidden?(mediaItem.id)
+            // Cancel any in-flight thumbnail load — no point downloading/decoding
+            // thumbnails for a gallery that has already been dismissed.
+            loadTask?.cancel()
+            loadTask = nil
         }
     }
 
@@ -1031,9 +1046,17 @@ struct LazyThumbnailView: View {
         guard !isLoading else { return }
         isLoading = true
 
-        Task(priority: .utility) {
+        let typeBeforeLoad = mediaItem.type
+
+        loadTask = Task(priority: .utility) {
             // Use concurrency limiting to prevent too many simultaneous loads
             await ThumbnailLoadingQueue.shared.withLimit {
+                // Bail out if gallery was dismissed while waiting in the queue.
+                guard !Task.isCancelled else {
+                    await MainActor.run { self.isLoading = false }
+                    return
+                }
+
                 // Double-check cache after waiting in queue (memory and disk)
                 if let cached = ThumbnailCache.shared.get(mediaItem.id, diskCacheKey: diskCacheKey) {
                     await MainActor.run {
@@ -1059,6 +1082,12 @@ struct LazyThumbnailView: View {
                     }
                 }
 
+                // Skip caching/display if cancelled during the load itself.
+                guard !Task.isCancelled else {
+                    await MainActor.run { self.isLoading = false }
+                    return
+                }
+
                 if let thumb = thumb {
                     // Cache it (both memory and disk if key available, skip disk for animated)
                     ThumbnailCache.shared.set(mediaItem.id, image: thumb, diskCacheKey: diskCacheKey)
@@ -1066,6 +1095,11 @@ struct LazyThumbnailView: View {
                     await MainActor.run {
                         self.thumbnail = thumb
                         self.isLoading = false
+                        // If type changed (e.g., webp/heic resolved from .image → .animatedImage),
+                        // notify the parent grid to re-check media types and re-filter.
+                        if self.mediaItem.type != typeBeforeLoad {
+                            self.onTypeResolved?(self.mediaItem.id)
+                        }
                     }
                 } else {
                     await MainActor.run {
