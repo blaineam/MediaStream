@@ -85,7 +85,7 @@ public struct VRVideoPlayerView: View {
                     gyroPitch: $gyroPitch,
                     gyroEnabled: $gyroEnabled,
                     fieldOfView: $fieldOfView,
-                    onTap: externalShowControls != nil ? nil : {
+                    onTap: {
                         withAnimation(.easeInOut(duration: 0.25)) {
                             showControls.toggle()
                         }
@@ -95,6 +95,18 @@ public struct VRVideoPlayerView: View {
                     },
                     onPlayPause: {
                         togglePlayPause()
+                    },
+                    onMenu: {
+                        if showProjectionPicker {
+                            withAnimation { showProjectionPicker = false }
+                            return true
+                        } else if showControls {
+                            withAnimation { showControls = false }
+                            return true
+                        } else {
+                            // Nothing to dismiss — let press pass through for system back navigation
+                            return false
+                        }
                     },
                     controlsVisible: showControls || showProjectionPicker
                 )
@@ -150,25 +162,19 @@ public struct VRVideoPlayerView: View {
             }
         }
         #if os(tvOS)
+        // These SwiftUI modifiers work when the controls overlay has focus
+        // (TVSCNView yields focus when controls are visible). When TVSCNView
+        // has focus, it handles presses directly via callbacks.
         .onPlayPauseCommand {
             togglePlayPause()
         }
         .onExitCommand {
-            if showControls {
-                withAnimation { showControls = false }
-            } else if showProjectionPicker {
+            if showProjectionPicker {
                 withAnimation { showProjectionPicker = false }
+            } else if showControls {
+                withAnimation { showControls = false }
             }
-        }
-        .onMoveCommand { direction in
-            guard externalShowControls == nil else { return }
-            // If controls are hidden, any direction press shows them
-            if !showControls {
-                withAnimation { showControls = true }
-                resetControlsTimer()
-            }
-            // When controls are visible, let SwiftUI handle focus navigation
-            // between buttons — don't intercept with seeking
+            // When controls are hidden, TVSCNView has focus and handles Menu directly
         }
         #endif
     }
