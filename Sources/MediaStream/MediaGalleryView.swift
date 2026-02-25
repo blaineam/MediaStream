@@ -221,7 +221,9 @@ public struct MediaGalleryView: View {
                         onVRProjectionChange: { newProjection in
                             vrProjectionOverrides[index] = newProjection
                             configuration.onVRProjectionChange?(mediaItems[index], newProjection)
-                        }
+                        },
+                        onNextItem: { nextItem(); resetControlsTimer() },
+                        onPreviousItem: { previousItem(); resetControlsTimer() }
                     )
                     .opacity(currentIndex == index ? 1 : 0)
                     .zIndex(currentIndex == index ? 1 : 0)

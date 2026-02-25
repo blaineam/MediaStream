@@ -1313,6 +1313,9 @@ struct ZoomableMediaView: View {
     var vrProjectionOverride: VRProjection? = nil
     /// Called when VR projection is changed via the in-player picker
     var onVRProjectionChange: ((VRProjection) -> Void)? = nil
+    /// Called to go to next/previous media item (tvOS VR slideshow controls)
+    var onNextItem: (() -> Void)? = nil
+    var onPreviousItem: (() -> Void)? = nil
 
     @State private var image: PlatformImage?
     @State private var videoURL: URL?
@@ -1428,7 +1431,9 @@ struct ZoomableMediaView: View {
                 authHeaders: headers,
                 onVideoComplete: onVideoComplete,
                 onProjectionChange: onVRProjectionChange,
-                externalShowControls: showControls
+                externalShowControls: showControls,
+                onNextItem: onNextItem,
+                onPreviousItem: onPreviousItem
             )
         } else {
             ZStack {

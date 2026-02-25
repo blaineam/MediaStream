@@ -25,6 +25,10 @@ public struct VRVideoPlayerView: View {
     /// External controls visibility (synced with gallery slideshow controls)
     var externalShowControls: Bool?
 
+    /// Called to go to next/previous media item (slideshow integration)
+    var onNextItem: (() -> Void)?
+    var onPreviousItem: (() -> Void)?
+
     @State private var player: AVPlayer?
     @State private var currentProjection: VRProjection
     @State private var isPlaying = false
@@ -64,13 +68,16 @@ public struct VRVideoPlayerView: View {
 
     public init(url: URL, initialProjection: VRProjection, authHeaders: [String: String] = [:],
                 onVideoComplete: (() -> Void)? = nil, onProjectionChange: ((VRProjection) -> Void)? = nil,
-                externalShowControls: Bool? = nil) {
+                externalShowControls: Bool? = nil,
+                onNextItem: (() -> Void)? = nil, onPreviousItem: (() -> Void)? = nil) {
         self.url = url
         self.initialProjection = initialProjection
         self.authHeaders = authHeaders
         self.onVideoComplete = onVideoComplete
         self.onProjectionChange = onProjectionChange
         self.externalShowControls = externalShowControls
+        self.onNextItem = onNextItem
+        self.onPreviousItem = onPreviousItem
         self._currentProjection = State(initialValue: initialProjection)
     }
 
@@ -101,7 +108,9 @@ public struct VRVideoPlayerView: View {
                     },
                     controlsVisible: showControls || showProjectionPicker,
                     onCoordinatorReady: { coordinator in
-                        sceneCoordinator = coordinator
+                        DispatchQueue.main.async {
+                            sceneCoordinator = coordinator
+                        }
                     }
                 )
                 .ignoresSafeArea()
@@ -114,20 +123,16 @@ public struct VRVideoPlayerView: View {
             // tvOS focus-based press handling. TVSCNView is never focusable — it only
             // handles pan gestures for look-around. All press events go through SwiftUI.
 
-            // When controls are hidden: invisible button captures Select press to show controls.
-            // No .onExitCommand here so Menu passes through to system back navigation.
+            // When controls are hidden: invisible UIKit view captures Select press.
+            // Uses UIViewRepresentable (not SwiftUI Button) to avoid tvOS focus highlight.
+            // Menu/PlayPause pass through via UIView's responder chain → SwiftUI modifiers.
             if !showControls && !showProjectionPicker {
-                Button {
+                TVFocusCaptureView {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         showControls = true
                     }
                     resetControlsTimer()
-                } label: {
-                    Color.clear
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
@@ -274,18 +279,6 @@ public struct VRVideoPlayerView: View {
                         )
                     #endif
 
-                    #if os(tvOS)
-                    // Remote tilt toggle
-                    vrControlButton(icon: gyroEnabled ? "gyroscope" : "hand.draw", tint: gyroEnabled ? .cyan : nil) {
-                        gyroEnabled.toggle()
-                        if gyroEnabled {
-                            startRemoteMotion()
-                        } else {
-                            stopRemoteMotion()
-                        }
-                    }
-                    #endif
-
                     // Projection picker — label shows current projection name
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -307,6 +300,20 @@ public struct VRVideoPlayerView: View {
                     .buttonStyle(VRControlBtnStyle())
                     #elseif os(macOS)
                     .buttonStyle(.plain)
+                    #endif
+
+                    #if os(tvOS)
+                    // Prev/Next media item (slideshow navigation)
+                    if onPreviousItem != nil || onNextItem != nil {
+                        Spacer().frame(width: 12)
+
+                        if let onPrev = onPreviousItem {
+                            vrControlButton(icon: "backward.end.fill") { onPrev() }
+                        }
+                        if let onNext = onNextItem {
+                            vrControlButton(icon: "forward.end.fill") { onNext() }
+                        }
+                    }
                     #endif
 
                     Spacer()
@@ -590,6 +597,10 @@ private struct VRControlBtnLabel: View {
 #if os(tvOS)
 /// Interactive progress bar for tvOS VR video player.
 /// Click to enter scrub mode, left/right to adjust, click to confirm, Menu to cancel.
+/// IMPORTANT: .onMoveCommand and .onExitCommand are only added when in scrub mode,
+/// because these modifiers ALWAYS consume their respective presses — even if the handler
+/// does nothing. When not in scrub mode, presses must pass through so focus navigation
+/// and menu dismiss work normally.
 struct VRScrubBar: View {
     let currentTime: Double
     let duration: Double
@@ -611,17 +622,14 @@ struct VRScrubBar: View {
     var body: some View {
         Button {
             if scrubMode {
-                // Confirm seek
                 onSeek(scrubPreviewTime)
                 scrubMode = false
             } else {
-                // Enter scrub mode
                 scrubPreviewTime = currentTime
                 scrubMode = true
             }
         } label: {
             VStack(spacing: 4) {
-                // Time preview label during scrubbing
                 if scrubMode {
                     Text(formatTime(scrubPreviewTime))
                         .font(.caption2)
@@ -643,23 +651,25 @@ struct VRScrubBar: View {
             }
             .animation(.easeInOut(duration: 0.2), value: scrubMode)
         }
-        .buttonStyle(.plain)
-        .focusable()
-        .onMoveCommand { direction in
-            guard scrubMode else { return }
-            switch direction {
-            case .left:
-                scrubPreviewTime = max(0, scrubPreviewTime - 5)
-            case .right:
-                scrubPreviewTime = min(duration, scrubPreviewTime + 5)
-            default:
-                break
-            }
-        }
-        .onExitCommand {
-            if scrubMode {
-                scrubMode = false
-            }
+        .buttonStyle(VRControlBtnStyle())
+        // Only intercept move/exit when actively scrubbing.
+        // When not scrubbing, these must NOT be present — they always consume presses
+        // and would block focus navigation and menu dismiss.
+        .if(scrubMode) { view in
+            view
+                .onMoveCommand { direction in
+                    switch direction {
+                    case .left:
+                        scrubPreviewTime = max(0, scrubPreviewTime - 5)
+                    case .right:
+                        scrubPreviewTime = min(duration, scrubPreviewTime + 5)
+                    default:
+                        break
+                    }
+                }
+                .onExitCommand {
+                    scrubMode = false
+                }
         }
     }
 
@@ -668,6 +678,77 @@ struct VRScrubBar: View {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return "\(mins):\(String(format: "%02d", secs))"
+    }
+}
+
+/// Conditional view modifier — only applies the transform when condition is true
+private extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - tvOS Focus Capture View
+
+/// UIViewRepresentable that captures Select press without any visual focus effect.
+/// Unlike SwiftUI Button, UIView subclasses don't get the tvOS system focus highlight
+/// (white haze). Menu/PlayPause pass through via UIView's responder chain to SwiftUI modifiers.
+struct TVFocusCaptureView: UIViewRepresentable {
+    let onSelect: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = FocusCaptureUIView()
+        view.onSelect = onSelect
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? FocusCaptureUIView)?.onSelect = onSelect
+    }
+
+    private class FocusCaptureUIView: UIView {
+        var onSelect: (() -> Void)?
+
+        override var canBecomeFocused: Bool { true }
+
+        // Suppress ALL system focus effects (white haze, parallax, etc.)
+        override var focusEffect: UIFocusEffect? {
+            get { nil }
+            set {}
+        }
+
+        override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+            // No visual change on focus
+        }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            var unhandled = [UIPress]()
+            for press in presses {
+                if press.type == .select {
+                    onSelect?()
+                } else {
+                    // Menu, PlayPause, arrows → pass to next responder → SwiftUI
+                    unhandled.append(press)
+                }
+            }
+            if !unhandled.isEmpty {
+                super.pressesBegan(Set(unhandled), with: event)
+            }
+        }
+
+        override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            // Pass all pressesEnded through except select
+            let passThrough = presses.filter { $0.type != .select }
+            if !passThrough.isEmpty {
+                super.pressesEnded(Set(passThrough), with: event)
+            }
+        }
     }
 }
 #endif
