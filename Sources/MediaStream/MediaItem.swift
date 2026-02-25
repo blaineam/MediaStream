@@ -16,6 +16,42 @@ public enum MediaType: Sendable {
     case audio
 }
 
+/// VR projection type for 360/stereoscopic video
+public enum VRProjection: String, CaseIterable, Codable, Sendable {
+    case equirectangular360   // Full 360 equirectangular
+    case equirectangular180   // 180 (front hemisphere)
+    case stereoscopicSBS      // Side-by-side 3D on full 360 sphere (left-right halves)
+    case stereoscopicTB       // Top-bottom 3D on full 360 sphere (over-under)
+    case sbs180               // Side-by-side 3D on 180 hemisphere (e.g. LR_180, SBS_180)
+    case tb180                // Top-bottom 3D on 180 hemisphere (e.g. TB_180, OU_180)
+    case flat                 // Flat video on virtual curved screen
+
+    public var displayName: String {
+        switch self {
+        case .equirectangular360: return "360\u{00B0}"
+        case .equirectangular180: return "180\u{00B0}"
+        case .stereoscopicSBS: return "3D SBS 360\u{00B0}"
+        case .stereoscopicTB: return "3D TB 360\u{00B0}"
+        case .sbs180: return "3D SBS 180\u{00B0}"
+        case .tb180: return "3D TB 180\u{00B0}"
+        case .flat: return "Flat VR"
+        }
+    }
+
+    /// Compact label for inline display (e.g. control bar button)
+    public var shortLabel: String {
+        switch self {
+        case .equirectangular360: return "360"
+        case .equirectangular180: return "180"
+        case .stereoscopicSBS: return "SBS"
+        case .stereoscopicTB: return "TB"
+        case .sbs180: return "SBS 180"
+        case .tb180: return "TB 180"
+        case .flat: return "Flat"
+        }
+    }
+}
+
 // MARK: - Encryption Provider Protocol
 
 /// Protocol for providing encryption/decryption of cached data
@@ -89,6 +125,23 @@ public enum MediaStreamConfiguration {
     /// ```
     public static var encryptionProvider: MediaStreamEncryptionProvider?
 
+    /// Closure type for loading a saved playback position for a media item.
+    /// Returns the saved position in seconds, or nil if no saved position exists.
+    public typealias PositionProvider = @Sendable (any MediaItem) async -> Double?
+
+    /// Closure type for saving the playback position for a media item.
+    /// Called periodically during playback (~every 10 seconds) and on playback stop.
+    /// Pass position <= 0 to indicate playback completed (clear saved position).
+    public typealias PositionSaver = @Sendable (any MediaItem, Double) async -> Void
+
+    /// The position provider closure — set this in your app to load saved playback positions
+    @MainActor
+    public static var positionProvider: PositionProvider?
+
+    /// The position saver closure — set this in your app to persist playback positions
+    @MainActor
+    public static var positionSaver: PositionSaver?
+
     /// Get headers for a URL using the configured provider
     public static func headers(for url: URL) -> [String: String]? {
         return MainActor.assumeIsolated {
@@ -115,6 +168,18 @@ public enum MediaStreamConfiguration {
         return await MainActor.run {
             credentialProvider?(url)
         }
+    }
+
+    /// Load saved playback position for a media item
+    public static func loadSavedPosition(for item: any MediaItem) async -> Double? {
+        let provider = await MainActor.run { positionProvider }
+        return await provider?(item)
+    }
+
+    /// Save playback position for a media item
+    public static func savePosition(for item: any MediaItem, position: Double) async {
+        let saver = await MainActor.run { positionSaver }
+        await saver?(item, position)
     }
 }
 
@@ -173,6 +238,9 @@ public protocol MediaItem: Identifiable, Sendable {
 
     /// Get audio metadata (title, artist, album)
     func getAudioMetadata() async -> AudioMetadata?
+
+    /// VR projection type (nil = not VR content)
+    var vrProjection: VRProjection? { get }
 }
 
 /// Metadata for audio files
@@ -227,6 +295,13 @@ extension MediaItem {
 extension MediaItem {
     /// Default: no source URL (will use loadImage instead)
     public var sourceURL: URL? { nil }
+}
+
+// MARK: - Default VR Projection Implementation
+
+extension MediaItem {
+    /// Default: not VR content
+    public var vrProjection: VRProjection? { nil }
 }
 
 // MARK: - Default Implementation for loadThumbnail
@@ -369,16 +444,8 @@ public struct VideoMediaItem: MediaItem {
         // Otherwise, try to generate thumbnail from video URL
         guard let url = await loadVideoURL() else { return nil }
 
-        // Get headers from MediaStreamConfiguration for authenticated requests
-        let headers = await MediaStreamConfiguration.headersAsync(for: url)
-
-        // Use WebViewVideoController for all video thumbnails (supports WebM, MP4, etc.)
-        // This uses WKWebView's HTML5 video which has broad format support
-        return await WebViewVideoController.generateThumbnail(
-            from: url,
-            targetSize: ThumbnailCache.thumbnailSize,
-            headers: headers
-        )
+        // Use ThumbnailCache which handles both AVFoundation and WebView fallback
+        return await ThumbnailCache.createVideoThumbnail(from: url)
     }
 
     public func loadVideoURL() async -> URL? {

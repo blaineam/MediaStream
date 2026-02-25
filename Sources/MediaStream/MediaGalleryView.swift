@@ -66,17 +66,26 @@ public struct MediaGalleryConfiguration {
     public var showControls: Bool
     public var backgroundColor: Color
     public var customActions: [MediaGalleryAction]
+    /// Called when the user changes the VR projection override for a media item.
+    /// Parameters: (mediaItem, newProjection) — newProjection is nil when clearing the override.
+    public var onVRProjectionChange: ((any MediaItem, VRProjection?) -> Void)?
+    /// Initial VR projection overrides keyed by media item index, loaded from persistent storage.
+    public var initialVRProjectionOverrides: [Int: VRProjection]
 
     public init(
         slideshowDuration: TimeInterval = 5.0,
         showControls: Bool = true,
         backgroundColor: Color = .black,
-        customActions: [MediaGalleryAction] = []
+        customActions: [MediaGalleryAction] = [],
+        onVRProjectionChange: ((any MediaItem, VRProjection?) -> Void)? = nil,
+        initialVRProjectionOverrides: [Int: VRProjection] = [:]
     ) {
         self.slideshowDuration = slideshowDuration
         self.showControls = showControls
         self.backgroundColor = backgroundColor
         self.customActions = customActions
+        self.onVRProjectionChange = onVRProjectionChange
+        self.initialVRProjectionOverrides = initialVRProjectionOverrides
     }
 }
 
@@ -97,6 +106,17 @@ public struct MediaGalleryView: View {
     @State private var currentIndex: Int
     @State private var isSlideshowPlaying = false
     @State private var isZoomed = false
+
+    /// Whether the current item is a VR video (disables swipe navigation so drag controls the VR camera)
+    private var isCurrentItemVR: Bool {
+        guard currentIndex >= 0 && currentIndex < mediaItems.count else { return false }
+        return mediaItems[currentIndex].vrProjection != nil || vrProjectionOverrides[currentIndex] != nil
+    }
+
+    /// The effective VR projection for the current item (auto-detected or manual override)
+    private func effectiveVRProjection(for index: Int) -> VRProjection? {
+        vrProjectionOverrides[index] ?? mediaItems[index].vrProjection
+    }
     @State private var wasPlayingBeforeZoom = false
     @State private var slideshowTimer: Timer?
     @State private var showControls = true
@@ -114,6 +134,8 @@ public struct MediaGalleryView: View {
     @State private var isShuffled = false
     @State private var shuffledIndices: [Int] = []
     @State private var shuffledPosition: Int = 0  // Current position in shuffled order
+    /// Manual VR projection override — keyed by item index. Allows treating any video as VR.
+    @State private var vrProjectionOverrides: [Int: VRProjection]
     @FocusState private var isFocused: Bool
 
     /// Number of adjacent items to preload on each side
@@ -164,6 +186,7 @@ public struct MediaGalleryView: View {
         self.onBackToGrid = onBackToGrid
         self.onIndexChange = onIndexChange
         _currentIndex = State(initialValue: min(max(0, initialIndex), mediaItems.count - 1))
+        _vrProjectionOverrides = State(initialValue: configuration.initialVRProjectionOverrides)
     }
 
     public var body: some View {
@@ -193,21 +216,27 @@ public struct MediaGalleryView: View {
                             if !isSlideshowPlaying {
                                 startSlideshow()
                             }
+                        },
+                        vrProjectionOverride: vrProjectionOverrides[index],
+                        onVRProjectionChange: { newProjection in
+                            vrProjectionOverrides[index] = newProjection
+                            configuration.onVRProjectionChange?(mediaItems[index], newProjection)
                         }
                     )
                     .opacity(currentIndex == index ? 1 : 0)
                     .zIndex(currentIndex == index ? 1 : 0)
                     .allowsHitTesting(currentIndex == index)
+                    #if !os(tvOS)
                     .simultaneousGesture(
                         // Navigation gesture - only activates for large horizontal swipes when not zoomed
+                        // Disabled for VR items so drag controls the VR camera instead
                         DragGesture(minimumDistance: 100)
                             .onEnded { value in
-                                // Block if zoomed or interacting with controls
                                 guard !isZoomed else { return }
+                                guard !isCurrentItemVR else { return }
                                 guard !MediaControlsInteractionState.shared.isInteracting else { return }
                                 let horizontalAmount = abs(value.translation.width)
                                 let verticalAmount = abs(value.translation.height)
-                                // Require clearly horizontal (2:1 ratio) and significant distance
                                 if horizontalAmount > verticalAmount * 2 && horizontalAmount > 100 {
                                     if value.translation.width < 0 {
                                         nextItem()
@@ -217,6 +246,7 @@ public struct MediaGalleryView: View {
                                 }
                             }
                     )
+                    #endif
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: currentIndex)
@@ -280,6 +310,28 @@ public struct MediaGalleryView: View {
                                     Image(systemName: customAction.icon)
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(.primary)
+                                }
+                            }
+
+                            // VR mode toggle for video items
+                            if mediaItems[currentIndex].type == .video {
+                                MediaStreamGlassButton(action: {
+                                    if vrProjectionOverrides[currentIndex] != nil {
+                                        // Clear manual override (revert to auto-detected or non-VR)
+                                        vrProjectionOverrides.removeValue(forKey: currentIndex)
+                                        configuration.onVRProjectionChange?(mediaItems[currentIndex], nil)
+                                    } else if mediaItems[currentIndex].vrProjection == nil {
+                                        // Enable VR mode with default 360 projection
+                                        vrProjectionOverrides[currentIndex] = .equirectangular360
+                                        configuration.onVRProjectionChange?(mediaItems[currentIndex], .equirectangular360)
+                                    } else {
+                                        // Already auto-detected as VR, no override needed
+                                    }
+                                    resetControlsTimer()
+                                }) {
+                                    Image(systemName: "view.3d")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(isCurrentItemVR ? Color.accentColor : .primary)
                                 }
                             }
 
@@ -730,7 +782,9 @@ public struct MediaGalleryView: View {
                 .foregroundStyle(.primary)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
+                #if !os(tvOS)
                 .textSelection(.enabled)
+                #endif
         }
         .frame(maxHeight: 150) // Limit height to make it scrollable
         .mediaStreamGlassCard(cornerRadius: 8)
@@ -1161,7 +1215,7 @@ public struct MediaGalleryView: View {
                 }
 
                 // If it returned an image object, we need to create a temp file
-                #if os(iOS)
+                #if os(iOS) || os(tvOS)
                 if let image = shareableItem as? UIImage {
                     print("📤 Slideshow share - Got UIImage, creating temp file")
                     if let tempURL = await createTemporaryImageFile(from: image, isAnimated: currentItem.type == .animatedImage) {
@@ -1172,7 +1226,7 @@ public struct MediaGalleryView: View {
                     }
                     return
                 }
-                #else
+                #elseif os(macOS)
                 if let image = shareableItem as? NSImage {
                     print("📤 Slideshow share - Got NSImage, creating temp file")
                     if let tempURL = await createTemporaryImageFile(from: image, isAnimated: currentItem.type == .animatedImage) {
@@ -1202,12 +1256,12 @@ public struct MediaGalleryView: View {
         let filename = "\(UUID().uuidString).png"
         let tempURL = tempDir.appendingPathComponent(filename)
 
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         guard let data = image.pngData() else {
             print("⚠️ Failed to create PNG data from UIImage")
             return nil
         }
-        #else
+        #elseif os(macOS)
         guard let tiffData = image.tiffRepresentation,
               let bitmapRep = NSBitmapImageRep(data: tiffData),
               let data = bitmapRep.representation(using: .png, properties: [:]) else {
@@ -1228,7 +1282,7 @@ public struct MediaGalleryView: View {
 
     private func scheduleHideControls() {
         cancelHideControls()
-        hideControlsTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { _ in
+        hideControlsTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { _ in
             Task { @MainActor [self] in
                 // Don't hide controls while downloading - user wants to see progress
                 if case .downloading = MediaDownloadManager.shared.downloadState {

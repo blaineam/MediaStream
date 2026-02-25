@@ -253,6 +253,8 @@ public struct MediaGalleryGridView: View {
     private var gridColumns: [GridItem] {
         #if os(iOS)
         [GridItem(.adaptive(minimum: 100, maximum: 200), spacing: 16)] // 3 wide portrait, 4 wide landscape
+        #elseif os(tvOS)
+        [GridItem(.adaptive(minimum: 300, maximum: 500), spacing: 32)] // Larger items on tvOS
         #else
         [GridItem(.adaptive(minimum: 200, maximum: 600), spacing: 16)] // Larger items on macOS
         #endif
@@ -265,7 +267,7 @@ public struct MediaGalleryGridView: View {
                 ScrollView {
                     gridContent
                         .padding(16)
-                        #if os(iOS)
+                        #if os(iOS) || os(tvOS)
                         // Small top padding when filter bar is visible (safeAreaInset handles the main offset)
                         .padding(.top, (!isMultiSelectMode && hasMultipleMediaTypes) ? 8 : 0)
                         #else
@@ -290,12 +292,12 @@ public struct MediaGalleryGridView: View {
 
             // Overlay glass UI elements
             VStack(spacing: 0) {
-                #if os(iOS)
-                // iOS: Fixed filter bar overlay
+                #if os(iOS) || os(tvOS)
+                // iOS/tvOS: Fixed filter bar overlay
                 if !isMultiSelectMode && hasMultipleMediaTypes {
                     filterBar
                 }
-                #else
+                #elseif os(macOS)
                 // macOS: Show filter bar if multiple media types, and multi-select controls
                 // Uses filterBarContent (without glass) since outer HStack provides the glass bar
                 HStack {
@@ -637,7 +639,7 @@ public struct MediaGalleryGridView: View {
                         }
 
                         // If it's an image object, create temp file as fallback
-                        #if os(iOS)
+                        #if os(iOS) || os(tvOS)
                         if let image = shareableItem as? UIImage {
                             print("📤 ShareSelected: Got UIImage, creating temp file")
                             if let tempURL = await createTemporaryImageFile(from: image, isAnimated: mediaItem.type == .animatedImage) {
@@ -645,7 +647,7 @@ public struct MediaGalleryGridView: View {
                             }
                             continue
                         }
-                        #else
+                        #elseif os(macOS)
                         if let image = shareableItem as? NSImage {
                             print("📤 ShareSelected: Got NSImage, creating temp file")
                             if let tempURL = await createTemporaryImageFile(from: image, isAnimated: mediaItem.type == .animatedImage) {
@@ -756,7 +758,7 @@ public struct MediaGalleryGridView: View {
             }
 
             // If it's an image object, create temp file as fallback
-            #if os(iOS)
+            #if os(iOS) || os(tvOS)
             if let image = shareableItem as? UIImage {
                 print("📤 ShareItem: Got UIImage, creating temp file")
                 if let tempURL = await createTemporaryImageFile(from: image, isAnimated: item.type == .animatedImage) {
@@ -767,7 +769,7 @@ public struct MediaGalleryGridView: View {
                 }
                 return
             }
-            #else
+            #elseif os(macOS)
             if let image = shareableItem as? NSImage {
                 print("📤 ShareItem: Got NSImage, creating temp file")
                 if let tempURL = await createTemporaryImageFile(from: image, isAnimated: item.type == .animatedImage) {
@@ -796,12 +798,12 @@ public struct MediaGalleryGridView: View {
         let filename = "\(UUID().uuidString).png"
         let tempURL = tempDir.appendingPathComponent(filename)
 
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         guard let data = image.pngData() else {
             print("⚠️ Failed to create PNG data from UIImage")
             return nil
         }
-        #else
+        #elseif os(macOS)
         guard let tiffData = image.tiffRepresentation,
               let bitmapRep = NSBitmapImageRep(data: tiffData),
               let data = bitmapRep.representation(using: .png, properties: [:]) else {
@@ -892,7 +894,9 @@ struct FilterChip: View {
                 .padding(.vertical, 6)
                 .background(
                     Capsule()
-                        #if canImport(UIKit)
+                        #if os(tvOS)
+                        .fill(isSelected ? Color.blue : Color.gray.opacity(0.3))
+                        #elseif canImport(UIKit)
                         .fill(isSelected ? Color.blue : Color(UIColor.tertiarySystemFill))
                         #elseif canImport(AppKit)
                         .fill(isSelected ? Color.blue : Color(NSColor.tertiaryLabelColor).opacity(0.2))
@@ -1010,6 +1014,17 @@ struct LazyThumbnailView: View {
                             .padding(6)
                             .background(.black.opacity(0.7))
                             .cornerRadius(6)
+                    }
+
+                    // VR badge
+                    if let vrProj = mediaItem.vrProjection {
+                        Text(vrProj.displayName)
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.blue.opacity(0.8)))
                     }
                 }
                 .padding(6)
@@ -1345,7 +1360,7 @@ fileprivate struct PreviewSampleMedia {
                                 // Use WebView for WebM thumbnails, AVFoundation for others
                                 if capturedFilename.hasSuffix(".webm") {
                                     print("🎬 Generating WebView thumbnail for: \(capturedFilename)")
-                                    return await WebViewVideoController.generateThumbnail(
+                                    return await ThumbnailCache.createVideoThumbnailWithWebView(
                                         from: capturedURL,
                                         targetSize: ThumbnailCache.thumbnailSize,
                                         headers: nil
@@ -1444,7 +1459,7 @@ fileprivate struct PreviewSampleMedia {
             videoURLLoader: { networkWebmURL },
             thumbnailLoader: {
                 print("🌐 Loading networked WebM video thumbnail via WebView...")
-                let thumbnail = await WebViewVideoController.generateThumbnail(
+                let thumbnail = await ThumbnailCache.createVideoThumbnailWithWebView(
                     from: networkWebmURL,
                     targetSize: ThumbnailCache.thumbnailSize,
                     headers: nil

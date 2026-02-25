@@ -28,7 +28,11 @@ public enum VideoMetadata {
     ///   - timeout: Maximum time to wait for metadata (default: 10 seconds)
     /// - Returns: Duration in seconds, or nil if unable to determine
     public static func getVideoDurationWebView(from url: URL, headers: [String: String]? = nil, timeout: TimeInterval = 10) async -> TimeInterval? {
+        #if canImport(WebKit)
         return await WebViewVideoController.getVideoDuration(from: url, headers: headers)
+        #else
+        return nil
+        #endif
     }
 
     /// Get video duration, trying AVFoundation first then falling back to WebView
@@ -71,7 +75,11 @@ public enum VideoMetadata {
     ///   - timeout: Maximum time to wait for metadata (default: 10 seconds)
     /// - Returns: True if video has audio, false if silent
     public static func hasAudioTrackWebView(url: URL, headers: [String: String]? = nil, timeout: TimeInterval = 10) async -> Bool {
+        #if canImport(WebKit)
         return await WebViewVideoController.hasAudioTrack(url: url, headers: headers)
+        #else
+        return true // Assume audio on platforms without WebKit
+        #endif
     }
 
     /// Check if video has audio tracks, trying AVFoundation first then falling back to WebView
@@ -144,12 +152,9 @@ public enum VideoMetadata {
             }
         }
 
-        // Use WebView for formats AVFoundation doesn't support
-        async let durationTask = getVideoDurationWebView(from: url, headers: headers, timeout: timeout)
-        async let audioTask = hasAudioTrackWebView(url: url, headers: headers, timeout: timeout)
-
-        let duration = await durationTask
-        let hasAudio = await audioTask
+        // Use WebView for formats AVFoundation doesn't support (not available on tvOS)
+        let duration = await getVideoDurationWebView(from: url, headers: headers, timeout: timeout)
+        let hasAudio = await hasAudioTrackWebView(url: url, headers: headers, timeout: timeout)
 
         return VideoInfo(duration: duration, hasAudio: hasAudio)
     }

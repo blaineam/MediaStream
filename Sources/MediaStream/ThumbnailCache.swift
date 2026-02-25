@@ -415,8 +415,8 @@ public actor ThumbnailLoadingQueue {
 
 /// Thread-safe LRU cache for thumbnails with memory limit and pressure handling
 public final class ThumbnailCache: @unchecked Sendable {
-    #if os(iOS)
-    // Lower memory limit on iOS to prevent OOM
+    #if os(iOS) || os(tvOS)
+    // Lower memory limit on iOS/tvOS to prevent OOM
     public static let shared = ThumbnailCache(maxMemoryMB: 50)
     #else
     public static let shared = ThumbnailCache(maxMemoryMB: 100)
@@ -789,7 +789,11 @@ extension ThumbnailCache {
         targetSize: CGFloat = thumbnailSize,
         headers: [String: String]? = nil
     ) async -> PlatformImage? {
+        #if canImport(WebKit)
         return await WebViewVideoController.generateThumbnail(from: videoURL, targetSize: targetSize, headers: headers)
+        #else
+        return nil
+        #endif
     }
 
     /// Creates a placeholder thumbnail for audio files without cover artwork
@@ -850,7 +854,11 @@ extension ThumbnailCache {
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { context in
             // Dark background
+            #if os(tvOS)
+            UIColor.darkGray.setFill()
+            #else
             UIColor.systemGray5.setFill()
+            #endif
             context.fill(CGRect(origin: .zero, size: size))
 
             // Draw play icon

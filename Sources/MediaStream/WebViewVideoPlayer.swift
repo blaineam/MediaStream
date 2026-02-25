@@ -8,8 +8,11 @@
 
 import Foundation
 import SwiftUI
-import WebKit
 import Combine
+
+#if canImport(WebKit)
+import WebKit
+#endif
 
 #if canImport(UIKit)
 import UIKit
@@ -29,7 +32,7 @@ public class MediaControlsInteractionState: ObservableObject {
 
 // MARK: - Gesture Blocking Helper
 
-#if canImport(UIKit)
+#if os(iOS)
 /// A view modifier that blocks parent gesture recognizers from receiving touches
 struct GestureBlockingModifier: ViewModifier {
     func body(content: Content) -> some View {
@@ -103,6 +106,10 @@ extension View {
     }
 }
 #endif
+
+// MARK: - WebKit-dependent code (not available on tvOS)
+
+#if canImport(WebKit)
 
 // MARK: - WebView Thumbnail Generation Queue
 
@@ -1412,13 +1419,17 @@ public struct CustomWebViewVideoPlayerView: View {
     }
 }
 
+#endif // canImport(WebKit)
+
 // MARK: - Color Helpers
 
 extension PlatformColor {
     /// System background color that adapts to light/dark mode (cross-platform)
     /// Note: On macOS, this checks the current system appearance each time it's called
     static var adaptiveBackground: PlatformColor {
-        #if canImport(UIKit)
+        #if os(tvOS)
+        return .black
+        #elseif canImport(UIKit)
         return .systemBackground
         #elseif canImport(AppKit)
         // Check current appearance and return explicit color
@@ -1434,7 +1445,9 @@ extension PlatformColor {
     /// Returns the appropriate hex color string for the current system appearance
     /// This always checks the current appearance, not cached values
     static var adaptiveBackgroundHex: String {
-        #if canImport(UIKit)
+        #if os(tvOS)
+        return "#000000"
+        #elseif canImport(UIKit)
         // iOS uses trait collection which handles this automatically
         return PlatformColor.systemBackground.hexString
         #elseif canImport(AppKit)

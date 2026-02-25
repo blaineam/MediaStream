@@ -232,6 +232,10 @@ struct CustomVideoPlayerView: View {
                             .foregroundStyle(.primary)
                             .monospacedDigit()
 
+                        #if os(tvOS)
+                        ProgressView(value: currentTime, total: max(duration, 0.1))
+                            .tint(.primary)
+                        #else
                         Slider(
                             value: Binding(
                                 get: { isDragging ? scrubPosition : currentTime },
@@ -254,12 +258,14 @@ struct CustomVideoPlayerView: View {
                             }
                         )
                         .tint(.primary)
+                        #endif
 
                         Text(formatTime(duration))
                             .font(.caption)
                             .foregroundStyle(.primary)
                             .monospacedDigit()
 
+                        #if !os(tvOS)
                         // Volume controls
                         HStack(spacing: 8) {
                             // Volume slider (expandable)
@@ -304,6 +310,7 @@ struct CustomVideoPlayerView: View {
                                 toggleMute()
                             }
                         }
+                        #endif
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
@@ -718,6 +725,10 @@ struct AudioPlayerControlsView: View {
                 .foregroundStyle(.primary)
                 .monospacedDigit()
 
+            #if os(tvOS)
+            ProgressView(value: currentTime, total: max(duration, 0.1))
+                .tint(.primary)
+            #else
             Slider(
                 value: Binding(
                     get: { isDragging ? scrubPosition : currentTime },
@@ -736,12 +747,14 @@ struct AudioPlayerControlsView: View {
                 }
             )
             .tint(.primary)
+            #endif
 
             Text(formatTime(duration))
                 .font(.caption)
                 .foregroundStyle(.primary)
                 .monospacedDigit()
 
+            #if !os(tvOS)
             // Volume controls
             HStack(spacing: 8) {
                 if showVolumeSlider {
@@ -778,6 +791,7 @@ struct AudioPlayerControlsView: View {
                         .foregroundStyle(.primary)
                 }
             }
+            #endif
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -1086,7 +1100,11 @@ struct VideoPlayerRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
+        #if os(tvOS)
+        view.backgroundColor = .black
+        #else
         view.backgroundColor = .systemBackground
+        #endif
 
         let playerLayer = AVPlayerLayer(player: player)
         playerLayer.videoGravity = .resizeAspect
@@ -1291,6 +1309,10 @@ struct ZoomableMediaView: View {
     var videoLoopCount: Int = 0
     var onVideoComplete: (() -> Void)? = nil
     var onManualPlayTriggered: (() -> Void)? = nil
+    /// Manual VR projection override (overrides mediaItem.vrProjection when set)
+    var vrProjectionOverride: VRProjection? = nil
+    /// Called when VR projection is changed via the in-player picker
+    var onVRProjectionChange: ((VRProjection) -> Void)? = nil
 
     @State private var image: PlatformImage?
     @State private var videoURL: URL?
@@ -1309,9 +1331,13 @@ struct ZoomableMediaView: View {
     @State private var savedAudioPosition: Double = 0.0
     @State private var videoWasAtEnd: Bool = false
     @State private var audioWasAtEnd: Bool = false
+    @State private var lastPersistedPosition: Double = 0.0
+    @State private var lastPersistTime: Date = .distantPast
     @State private var hasLoadedMedia: Bool = false
     @State private var useWebViewForVideo: Bool = false  // True for WebM, false for AVFoundation-compatible formats
+    #if canImport(WebKit)
     @StateObject private var videoController = WebViewVideoController()
+    #endif
     @StateObject private var animatedImageController = WebViewAnimatedImageController()
 
     private let minScale: CGFloat = 1.0
@@ -1386,6 +1412,178 @@ struct ZoomableMediaView: View {
         }
     }
 
+    /// Effective VR projection: override takes priority over auto-detected
+    private var effectiveVRProjection: VRProjection? {
+        vrProjectionOverride ?? mediaItem.vrProjection
+    }
+
+    /// VR video content, extracted to reduce type-checker complexity in body.
+    @ViewBuilder
+    private var vrVideoContent: some View {
+        if let vrProj = effectiveVRProjection, let url = videoURL {
+            let headers = MediaStreamConfiguration.headers(for: url) ?? [:]
+            VRVideoPlayerView(
+                url: url,
+                initialProjection: vrProj,
+                authHeaders: headers,
+                onVideoComplete: onVideoComplete,
+                onProjectionChange: onVRProjectionChange,
+                externalShowControls: showControls
+            )
+        } else {
+            ZStack {
+                Color(PlatformColor.adaptiveBackground)
+                if isLoading || videoURL != nil {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                }
+            }
+        }
+    }
+
+    /// Regular (non-VR) video content, extracted to reduce type-checker complexity.
+    @ViewBuilder
+    private var regularVideoContent: some View {
+        #if canImport(WebKit)
+        if useWebViewForVideo {
+            ZStack {
+                CustomWebViewVideoPlayerView(
+                    controller: videoController,
+                    shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                    showControls: showControls && videoController.isReady,
+                    hasAudio: true,
+                    showVolumeSlider: false,
+                    onVideoEnd: onVideoComplete
+                )
+
+                if !videoController.isReady {
+                    Color(PlatformColor.adaptiveBackground)
+                    if isLoading || videoURL != nil {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                    }
+                }
+            }
+        } else if let player = videoPlayer {
+            CustomVideoPlayerView(
+                player: player,
+                mediaItem: mediaItem,
+                shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                showControls: showControls,
+                isCurrentSlide: isCurrentSlide,
+                videoLoopCount: videoLoopCount,
+                onVideoComplete: onVideoComplete,
+                onManualPlayTriggered: onManualPlayTriggered,
+                savedPosition: $savedVideoPosition,
+                wasAtEnd: $videoWasAtEnd
+            )
+        } else {
+            ZStack {
+                Color(PlatformColor.adaptiveBackground)
+                if isLoading || videoURL != nil {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                }
+            }
+        }
+        #else
+        if let player = videoPlayer {
+            CustomVideoPlayerView(
+                player: player,
+                mediaItem: mediaItem,
+                shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                showControls: showControls,
+                isCurrentSlide: isCurrentSlide,
+                videoLoopCount: videoLoopCount,
+                onVideoComplete: onVideoComplete,
+                onManualPlayTriggered: onManualPlayTriggered,
+                savedPosition: $savedVideoPosition,
+                wasAtEnd: $videoWasAtEnd
+            )
+        } else {
+            ZStack {
+                Color(PlatformColor.adaptiveBackground)
+                if isLoading || videoURL != nil {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                }
+            }
+        }
+        #endif
+    }
+
+    /// Animated image content, extracted to reduce type-checker complexity.
+    @ViewBuilder
+    private func animatedImageContent(geometry: GeometryProxy) -> some View {
+        #if canImport(UIKit)
+        if useWebViewForAnimatedImage, let url = animatedImageURL {
+            // Native CGImageSource animated image display
+            WebViewAnimatedImageRepresentable(controller: animatedImageController)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                .scaleEffect(scale)
+                .offset(offset)
+                #if !os(tvOS)
+                .gesture(createMagnificationGesture(in: geometry))
+                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                #endif
+        } else if useStreaming, let url = animatedImageURL {
+            // Legacy: streaming view for large GIFs
+            StreamingAnimatedImageRepresentable(url: url, containerSize: geometry.size)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                .scaleEffect(scale)
+                .offset(offset)
+                #if !os(tvOS)
+                .gesture(createMagnificationGesture(in: geometry))
+                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                #endif
+        } else if let image = image {
+            // Use regular animated image view for small GIFs (already in memory)
+            AnimatedImageView(image: image, scale: scale, offset: offset)
+                #if !os(tvOS)
+                .gesture(createMagnificationGesture(in: geometry))
+                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+                #endif
+        }
+        #else  // macOS — native CGImageSource rendering (no WKWebView)
+        if useWebViewForAnimatedImage {
+            WebViewAnimatedImageRepresentable(controller: animatedImageController)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+                .scaleEffect(scale)
+                .offset(offset)
+                .gesture(createMagnificationGesture(in: geometry))
+                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+        } else if let image = image {
+            AnimatedImageView(image: image, scale: scale, offset: offset)
+                .gesture(createMagnificationGesture(in: geometry))
+                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+        }
+        #endif
+    }
+
+    /// Static image content, extracted to reduce type-checker complexity.
+    @ViewBuilder
+    private func imageContent(image: PlatformImage, geometry: GeometryProxy) -> some View {
+        #if canImport(UIKit)
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .scaleEffect(scale)
+            .offset(offset)
+            #if !os(tvOS)
+            .gesture(createMagnificationGesture(in: geometry))
+            .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+            #endif
+        #elseif canImport(AppKit)
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .scaleEffect(scale)
+            .offset(offset)
+            .gesture(createMagnificationGesture(in: geometry))
+            .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
+        #endif
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -1397,109 +1595,14 @@ struct ZoomableMediaView: View {
                 } else {
                     Group {
                         if mediaItem.type == .animatedImage {
-                            #if canImport(UIKit)
-                            if useWebViewForAnimatedImage, let url = animatedImageURL {
-                                // Native CGImageSource animated image display
-                                WebViewAnimatedImageRepresentable(controller: animatedImageController)
-                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
-                                    .scaleEffect(scale)
-                                    .offset(offset)
-                                    .gesture(createMagnificationGesture(in: geometry))
-                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            } else if useStreaming, let url = animatedImageURL {
-                                // Legacy: streaming view for large GIFs
-                                StreamingAnimatedImageRepresentable(url: url, containerSize: geometry.size)
-                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
-                                    .scaleEffect(scale)
-                                    .offset(offset)
-                                    .gesture(createMagnificationGesture(in: geometry))
-                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            } else if let image = image {
-                                // Use regular animated image view for small GIFs (already in memory)
-                                AnimatedImageView(image: image, scale: scale, offset: offset)
-                                    .gesture(createMagnificationGesture(in: geometry))
-                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            }
-                            #else  // macOS — native CGImageSource rendering (no WKWebView)
-                            if useWebViewForAnimatedImage {
-                                WebViewAnimatedImageRepresentable(controller: animatedImageController)
-                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
-                                    .scaleEffect(scale)
-                                    .offset(offset)
-                                    .gesture(createMagnificationGesture(in: geometry))
-                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            } else if let image = image {
-                                AnimatedImageView(image: image, scale: scale, offset: offset)
-                                    .gesture(createMagnificationGesture(in: geometry))
-                                    .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            }
-                            #endif
+                            animatedImageContent(geometry: geometry)
                         } else if mediaItem.type == .image, let image = image {
-                            #if canImport(UIKit)
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .scaleEffect(scale)
-                                .offset(offset)
-                                .gesture(createMagnificationGesture(in: geometry))
-                                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            #elseif canImport(AppKit)
-                            Image(nsImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .scaleEffect(scale)
-                                .offset(offset)
-                                .gesture(createMagnificationGesture(in: geometry))
-                                .applyPanGesture(if: scale > minScale, gesture: panGesture(in: geometry))
-                            #endif
+                            imageContent(image: image, geometry: geometry)
+                        } else if mediaItem.type == .video, effectiveVRProjection != nil {
+                            vrVideoContent
                         } else if mediaItem.type == .video {
-                            if useWebViewForVideo {
-                                // WebM files: Use WebView player (AVFoundation doesn't support WebM)
-                                ZStack {
-                                    CustomWebViewVideoPlayerView(
-                                        controller: videoController,
-                                        shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
-                                        showControls: showControls && videoController.isReady,
-                                        hasAudio: true,
-                                        showVolumeSlider: false,  // Volume slider doesn't work via JS
-                                        onVideoEnd: onVideoComplete
-                                    )
-
-                                    // Show loading overlay while video loads
-                                    if !videoController.isReady {
-                                        Color(PlatformColor.adaptiveBackground)
-                                        if isLoading || videoURL != nil {
-                                            ProgressView()
-                                                .scaleEffect(1.5)
-                                        }
-                                    }
-                                }
-                            } else if let player = videoPlayer {
-                                // Non-WebM: Use AVFoundation with native controls
-                                CustomVideoPlayerView(
-                                    player: player,
-                                    mediaItem: mediaItem,
-                                    shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
-                                    showControls: showControls,
-                                    isCurrentSlide: isCurrentSlide,
-                                    videoLoopCount: videoLoopCount,
-                                    onVideoComplete: onVideoComplete,
-                                    onManualPlayTriggered: onManualPlayTriggered,
-                                    savedPosition: $savedVideoPosition,
-                                    wasAtEnd: $videoWasAtEnd
-                                )
-                            } else {
-                                // Loading state
-                                ZStack {
-                                    Color(PlatformColor.adaptiveBackground)
-                                    if isLoading || videoURL != nil {
-                                        ProgressView()
-                                            .scaleEffect(1.5)
-                                    }
-                                }
-                            }
+                            regularVideoContent
                         } else if mediaItem.type == .audio {
-                            // Audio player with album artwork background
                             audioPlayerView(geometry: geometry)
                         }
                     }
@@ -1507,11 +1610,13 @@ struct ZoomableMediaView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
+            #if !os(tvOS)
             // Only allow double-tap zoom for images, not videos or audio
             .modifier(DoubleTapZoomModifier(
                 isEnabled: mediaItem.type != .video && mediaItem.type != .audio,
                 action: { handleDoubleTap(in: geometry) }
             ))
+            #endif
         }
         .task(id: mediaItem.id) {
             // Reset state when switching to a different media item
@@ -1520,7 +1625,9 @@ struct ZoomableMediaView: View {
             animatedImageURL = nil
             useStreaming = false
             hasLoadedMedia = false
+            #if canImport(WebKit)
             videoController.stop()
+            #endif
 
             // Clean up video player (AVFoundation)
             videoPlayer?.pause()
@@ -1535,6 +1642,20 @@ struct ZoomableMediaView: View {
             savedAudioPosition = 0
             audioWasAtEnd = false
 
+            // Reset persist tracking
+            lastPersistedPosition = 0
+            lastPersistTime = .distantPast
+
+            // Load saved playback position from persistent storage
+            // Skip resume during slideshow — just start from the beginning
+            if !isSlideshowPlaying, let savedPos = await MediaStreamConfiguration.loadSavedPosition(for: mediaItem), savedPos > 5 {
+                if mediaItem.type == .video {
+                    savedVideoPosition = savedPos
+                } else if mediaItem.type == .audio {
+                    savedAudioPosition = savedPos
+                }
+            }
+
             // Reset zoom state and notify parent
             scale = 1.0
             lastScale = 1.0
@@ -1543,24 +1664,53 @@ struct ZoomableMediaView: View {
 
             await loadMedia()
         }
+        .onChange(of: vrProjectionOverride) { _, newValue in
+            guard mediaItem.type == .video else { return }
+            if newValue != nil {
+                // Switching TO VR mode: stop the regular AVPlayer so it doesn't
+                // compete with VRVideoPlayerView's own player
+                if let player = videoPlayer {
+                    MediaPlaybackService.shared.unregisterExternalPlayer(player, forMediaId: mediaItem.id)
+                }
+                videoPlayer?.pause()
+                videoPlayer = nil
+                #if canImport(WebKit)
+                if useWebViewForVideo {
+                    videoController.stop()
+                    useWebViewForVideo = false
+                }
+                #endif
+            } else {
+                // Switching FROM VR mode back to regular: reload media
+                hasLoadedMedia = false
+                videoURL = nil
+                Task { await loadMedia() }
+            }
+        }
         .onChange(of: isCurrentSlide) { oldValue, newValue in
             if mediaItem.type == .video {
                 if newValue && !oldValue {
                     // When this slide becomes current (and wasn't before), show first frame for videos
                     // Only if not in slideshow mode (slideshow will autoplay)
+                    #if canImport(WebKit)
                     if useWebViewForVideo {
                         if !isSlideshowPlaying && videoController.isReady {
                             videoController.showFirstFrame()
                         }
                     }
+                    #endif
                     // AVPlayer doesn't need "show first frame" - it will autoplay when slideshow starts
                 } else if !newValue && oldValue {
                     // When navigating away from this slide, pause the video
+                    #if canImport(WebKit)
                     if useWebViewForVideo {
                         videoController.pause()
                     } else {
                         videoPlayer?.pause()
                     }
+                    #else
+                    videoPlayer?.pause()
+                    #endif
                 }
             } else if mediaItem.type == .audio {
                 if newValue && !oldValue {
@@ -1620,6 +1770,7 @@ struct ZoomableMediaView: View {
         .onChange(of: isSlideshowPlaying) { oldValue, newValue in
             // Handle slideshow start/stop for videos on the current slide
             if mediaItem.type == .video && isCurrentSlide {
+                #if canImport(WebKit)
                 if useWebViewForVideo && videoController.isReady {
                     if newValue && !oldValue {
                         // Slideshow started - play the video
@@ -1635,6 +1786,19 @@ struct ZoomableMediaView: View {
                     }
                 } else if let player = videoPlayer {
                     // AVFoundation video player
+                    if newValue && !oldValue {
+                        if videoWasAtEnd {
+                            player.seek(to: .zero)
+                            videoWasAtEnd = false
+                        }
+                        player.play()
+                    } else if !newValue && oldValue {
+                        player.pause()
+                    }
+                }
+                #else
+                if let player = videoPlayer {
+                    // AVFoundation video player
                     // Playback is handled by CustomVideoPlayerView via shouldAutoplay binding
                     if newValue && !oldValue {
                         // Slideshow started - play the video
@@ -1648,6 +1812,7 @@ struct ZoomableMediaView: View {
                         player.pause()
                     }
                 }
+                #endif
             }
             // Audio playback is handled by AudioPlayerControlsView via shouldAutoplay binding
             // The AudioPlayerControlsView observes shouldAutoplay changes directly
@@ -1670,7 +1835,7 @@ struct ZoomableMediaView: View {
         .onChange(of: scale) { _, newScale in
             onZoomChanged(newScale > minScale)
         }
-        #if canImport(UIKit)
+        #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.shouldPauseForBackgroundNotification)) { _ in
             // Only pause NON-CACHED media when app enters background
             // Cached media should continue playing in background
@@ -1698,8 +1863,6 @@ struct ZoomableMediaView: View {
                 audioPlayer?.pause()
             }
         }
-        #endif
-        #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.externalPlayNotification)) { _ in
             // Handle remote play command for cached media
             // Note: We check isCurrentSlide but also allow if this view's player is registered OR paused
@@ -1764,7 +1927,54 @@ struct ZoomableMediaView: View {
             syncStateOnForeground()
         }
         #endif
+        .onChange(of: savedVideoPosition) { _, newValue in
+            // Throttle persistent saves to every ~10 seconds
+            let now = Date()
+            guard now.timeIntervalSince(lastPersistTime) >= 10,
+                  abs(newValue - lastPersistedPosition) > 1 else { return }
+            lastPersistTime = now
+            lastPersistedPosition = newValue
+            let item = mediaItem
+            Task { await MediaStreamConfiguration.savePosition(for: item, position: newValue) }
+        }
+        .onChange(of: savedAudioPosition) { _, newValue in
+            let now = Date()
+            guard now.timeIntervalSince(lastPersistTime) >= 10,
+                  abs(newValue - lastPersistedPosition) > 1 else { return }
+            lastPersistTime = now
+            lastPersistedPosition = newValue
+            let item = mediaItem
+            Task { await MediaStreamConfiguration.savePosition(for: item, position: newValue) }
+        }
+        .onChange(of: videoWasAtEnd) { _, isAtEnd in
+            if isAtEnd {
+                // Video completed — clear saved position
+                let item = mediaItem
+                Task { await MediaStreamConfiguration.savePosition(for: item, position: 0) }
+            }
+        }
+        .onChange(of: audioWasAtEnd) { _, isAtEnd in
+            if isAtEnd {
+                let item = mediaItem
+                Task { await MediaStreamConfiguration.savePosition(for: item, position: 0) }
+            }
+        }
         .onDisappear {
+            // Persist final position before cleanup
+            let finalPosition: Double
+            if mediaItem.type == .video {
+                finalPosition = videoWasAtEnd ? 0 : savedVideoPosition
+            } else if mediaItem.type == .audio {
+                finalPosition = audioWasAtEnd ? 0 : savedAudioPosition
+            } else {
+                finalPosition = 0
+            }
+            if finalPosition > 5 || (mediaItem.type == .video || mediaItem.type == .audio) {
+                let item = mediaItem
+                let pos = finalPosition
+                Task { await MediaStreamConfiguration.savePosition(for: item, position: pos) }
+            }
+
             // Critical: Release memory when view disappears to prevent OOM
             // Delete temp animated image files if they exist
             if let tempURL = animatedImageURL,
@@ -1798,7 +2008,9 @@ struct ZoomableMediaView: View {
             audioPlayer = nil
 
             // Fully destroy controllers to release resources
+            #if canImport(WebKit)
             videoController.destroy()
+            #endif
             animatedImageController.destroy()
 
         }
@@ -2014,6 +2226,15 @@ struct ZoomableMediaView: View {
             }
             #endif
         case .video:
+            // VR videos: just need the URL, VRVideoPlayerView manages its own AVPlayer
+            if effectiveVRProjection != nil {
+                if let url = await mediaItem.loadVideoURL() {
+                    videoURL = url
+                    hasLoadedMedia = true
+                }
+                return
+            }
+
             // Check local cache first for background playback support
             if let localURL = await MainActor.run(body: { MediaDownloadManager.shared.localURL(for: mediaItem) }),
                FileManager.default.fileExists(atPath: localURL.path) {
@@ -2043,6 +2264,9 @@ struct ZoomableMediaView: View {
                 let ext = url.pathExtension.lowercased()
                 let isWebM = ext == "webm"
 
+                var useAVFoundation = !isWebM
+
+                #if canImport(WebKit)
                 if isWebM {
                     // WebM: Must use WKWebView player (AVFoundation doesn't support WebM codec)
                     await MainActor.run {
@@ -2065,8 +2289,12 @@ struct ZoomableMediaView: View {
                             }
                         }
                     }
-                } else {
-                    // Non-WebM: Try AVFoundation first (better performance/controls)
+                    useAVFoundation = false
+                }
+                #endif
+
+                if useAVFoundation {
+                    // Non-WebM (or no WebKit): Try AVFoundation (better performance/controls)
                     let playerItem = AVPlayerItem(url: url)
                     let player = AVPlayer(playerItem: playerItem)
 
@@ -2083,13 +2311,17 @@ struct ZoomableMediaView: View {
                                 videoPlayer = player
                             }
                         } else {
+                            #if canImport(WebKit)
                             // AVFoundation can't play it - fallback to WebView
                             await fallbackToWebView(url: url)
+                            #endif
                         }
                     } catch {
+                        #if canImport(WebKit)
                         // AVFoundation failed - fallback to WebView
                         print("AVFoundation failed to load video: \(error.localizedDescription), falling back to WebView")
                         await fallbackToWebView(url: url)
+                        #endif
                     }
                 }
             }
@@ -2172,6 +2404,7 @@ struct ZoomableMediaView: View {
         }
     }
 
+    #if canImport(WebKit)
     /// Fallback to WebView player when AVFoundation can't play the video
     private func fallbackToWebView(url: URL) async {
         let headers = await MediaStreamConfiguration.headersAsync(for: url)
@@ -2195,7 +2428,9 @@ struct ZoomableMediaView: View {
             }
         }
     }
+    #endif
 
+    #if !os(tvOS)
     private func createMagnificationGesture(in geometry: GeometryProxy) -> some Gesture {
         MagnificationGesture()
             .onChanged { value in
@@ -2288,6 +2523,7 @@ struct ZoomableMediaView: View {
             }
         }
     }
+    #endif
 
     /// Detect the appropriate file extension for animated image data by inspecting the
     /// image source type via ImageIO. Used to create temp files with correct extensions
