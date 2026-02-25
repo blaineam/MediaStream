@@ -203,6 +203,9 @@ public struct VRVideoView: UIViewRepresentable {
     var onPlayPause: (() -> Void)?
     /// When true, pan gesture is disabled (tvOS: so trackpad swipes navigate focus)
     var controlsVisible: Bool = false
+    /// Optional callback to receive the VRSceneCoordinator reference for direct gyro updates
+    /// (bypasses @State to avoid flooding SwiftUI with 60Hz re-renders)
+    var onCoordinatorReady: ((VRSceneCoordinator) -> Void)?
 
     public init(player: AVPlayer, projection: VRProjection,
                 manualYaw: Binding<Float>, manualPitch: Binding<Float>,
@@ -210,7 +213,8 @@ public struct VRVideoView: UIViewRepresentable {
                 gyroEnabled: Binding<Bool>, fieldOfView: Binding<Double>,
                 onTap: (() -> Void)? = nil,
                 onPlayPause: (() -> Void)? = nil,
-                controlsVisible: Bool = false) {
+                controlsVisible: Bool = false,
+                onCoordinatorReady: ((VRSceneCoordinator) -> Void)? = nil) {
         self.player = player
         self.projection = projection
         self._manualYaw = manualYaw
@@ -222,6 +226,7 @@ public struct VRVideoView: UIViewRepresentable {
         self.onTap = onTap
         self.onPlayPause = onPlayPause
         self.controlsVisible = controlsVisible
+        self.onCoordinatorReady = onCoordinatorReady
     }
 
     public func makeUIView(context: Context) -> SCNView {
@@ -267,6 +272,9 @@ public struct VRVideoView: UIViewRepresentable {
         // Press events (select, menu, play/pause) are handled at the SwiftUI level
         // in VRVideoPlayerView — TVSCNView is a pure rendering surface.
         #endif
+
+        // Expose coordinator for direct gyro updates (bypasses @State)
+        onCoordinatorReady?(coordinator.sceneCoordinator)
 
         return scnView
     }
@@ -406,6 +414,7 @@ public struct VRVideoView: NSViewRepresentable {
     var onTap: (() -> Void)?
     var onPlayPause: (() -> Void)?
     var controlsVisible: Bool = false
+    var onCoordinatorReady: ((VRSceneCoordinator) -> Void)?
 
     public init(player: AVPlayer, projection: VRProjection,
                 manualYaw: Binding<Float>, manualPitch: Binding<Float>,
@@ -413,7 +422,8 @@ public struct VRVideoView: NSViewRepresentable {
                 gyroEnabled: Binding<Bool>, fieldOfView: Binding<Double>,
                 onTap: (() -> Void)? = nil,
                 onPlayPause: (() -> Void)? = nil,
-                controlsVisible: Bool = false) {
+                controlsVisible: Bool = false,
+                onCoordinatorReady: ((VRSceneCoordinator) -> Void)? = nil) {
         self.player = player
         self.projection = projection
         self._manualYaw = manualYaw
@@ -425,6 +435,7 @@ public struct VRVideoView: NSViewRepresentable {
         self.onTap = onTap
         self.onPlayPause = onPlayPause
         self.controlsVisible = controlsVisible
+        self.onCoordinatorReady = onCoordinatorReady
     }
 
     public func makeNSView(context: Context) -> SCNView {
@@ -453,6 +464,8 @@ public struct VRVideoView: NSViewRepresentable {
         scnView.addGestureRecognizer(clickGesture)
 
         coordinator.scnView = scnView
+
+        onCoordinatorReady?(coordinator.sceneCoordinator)
 
         return scnView
     }

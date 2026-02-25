@@ -55,6 +55,9 @@ public struct VRVideoPlayerView: View {
     @State private var motionController: VRMotionController?
     #endif
 
+    /// Direct reference to the scene coordinator for bypassing @State on 60Hz updates (gyro)
+    @State private var sceneCoordinator: VRSceneCoordinator?
+
     #if os(tvOS)
     @State private var remoteMotionController: VRRemoteMotionController?
     #endif
@@ -96,7 +99,10 @@ public struct VRVideoPlayerView: View {
                     onPlayPause: {
                         togglePlayPause()
                     },
-                    controlsVisible: showControls || showProjectionPicker
+                    controlsVisible: showControls || showProjectionPicker,
+                    onCoordinatorReady: { coordinator in
+                        sceneCoordinator = coordinator
+                    }
                 )
                 .ignoresSafeArea()
             } else {
@@ -121,6 +127,7 @@ public struct VRVideoPlayerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusEffectDisabled()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
@@ -482,9 +489,10 @@ public struct VRVideoPlayerView: View {
 
     #if os(iOS)
     private func startMotion() {
+        let coord = sceneCoordinator
         let controller = VRMotionController { yaw, pitch in
-            gyroYaw = yaw
-            gyroPitch = pitch
+            coord?.gyroYaw = yaw
+            coord?.gyroPitch = pitch
         }
         controller.start()
         motionController = controller
@@ -493,6 +501,8 @@ public struct VRVideoPlayerView: View {
     private func stopMotion() {
         motionController?.stop()
         motionController = nil
+        sceneCoordinator?.gyroYaw = 0
+        sceneCoordinator?.gyroPitch = 0
         gyroYaw = 0
         gyroPitch = 0
     }
@@ -502,9 +512,13 @@ public struct VRVideoPlayerView: View {
 
     #if os(tvOS)
     private func startRemoteMotion() {
+        // Write gyro values directly to the scene coordinator (read by its render delegate).
+        // This bypasses @State → SwiftUI body re-evaluation → updateUIView, which at 60Hz
+        // floods SwiftUI and freezes the app.
+        let coord = sceneCoordinator
         let controller = VRRemoteMotionController { yaw, pitch in
-            gyroYaw = yaw
-            gyroPitch = pitch
+            coord?.gyroYaw = yaw
+            coord?.gyroPitch = pitch
         }
         controller.start()
         remoteMotionController = controller
@@ -513,6 +527,8 @@ public struct VRVideoPlayerView: View {
     private func stopRemoteMotion() {
         remoteMotionController?.stop()
         remoteMotionController = nil
+        sceneCoordinator?.gyroYaw = 0
+        sceneCoordinator?.gyroPitch = 0
         gyroYaw = 0
         gyroPitch = 0
     }
