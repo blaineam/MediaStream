@@ -8,14 +8,16 @@
 
 import SwiftUI
 import SceneKit
+import SpriteKit
 import AVFoundation
 
 // MARK: - Shared Coordinator
 
 /// Shared coordinator for VR scene management, used by both UIKit and AppKit representables.
-/// Extracts video frames via AVPlayerItemVideoOutput and feeds them as pixel buffer textures.
-/// This avoids SceneKit's internal AVPlayer-as-texture path which fails on HDR/HLG content
-/// ("Could not get pixel buffer" / color space conversion errors).
+/// Uses SpriteKit (SKScene + SKVideoNode) as an intermediary to render AVPlayer video as a
+/// texture on the SceneKit sphere. This handles HDR→SDR conversion automatically and avoids
+/// the "Could not get pixel buffer" errors that occur when setting AVPlayer directly as
+/// SCNMaterial.diffuse.contents on HDR/HLG video content.
 public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
     let scene = SCNScene()
     let cameraNode = SCNNode()
@@ -23,12 +25,9 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
     var currentPlayer: AVPlayer
     var currentProjection: VRProjection
 
-    /// Video output that converts frames to BGRA (SDR), handling HDR→SDR automatically
-    private var videoOutput: AVPlayerItemVideoOutput?
-    /// Cached UV transform — re-applied each frame since setting diffuse.contents can reset it
-    private var cachedContentsTransform = SCNMatrix4Identity
-    private var cachedWrapS: SCNWrapMode = .repeat
-    private var cachedWrapT: SCNWrapMode = .clamp
+    /// SpriteKit scene used as texture contents — SKVideoNode handles video rendering
+    private var videoScene: SKScene?
+    private var videoNode: SKVideoNode?
 
     // Camera orientation — updated directly by gesture handlers, read by render delegate
     var manualYaw: Float = 0
@@ -44,7 +43,7 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
         super.init()
         setupScene()
         setupSphere(projection: projection)
-        setupVideoOutput(player: player)
+        setupVideoTexture(player: player)
     }
 
     private func setupScene() {
@@ -90,104 +89,80 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
         applyUVTransform(projection: projection)
     }
 
-    /// Applies UV transform for pixel buffer texture orientation.
-    /// CVPixelBuffer from AVPlayerItemVideoOutput is top-left origin, so we need Y-flip
-    /// to match SceneKit's bottom-left UV origin on the sphere interior.
-    /// Also caches the transform so it can be re-applied each frame after setting contents.
+    /// Applies UV transform for the SpriteKit video texture.
+    /// SpriteKit renders with Y matching SceneKit's expectation when used as material contents,
+    /// so no Y-flip is needed. Only cropping for stereoscopic modes.
     func applyUVTransform(projection: VRProjection) {
         guard let material = sphereNode.geometry?.firstMaterial else { return }
 
-        // Y-flip: scale(1, -1, 1) then translate(0, 1, 0) → maps v to (1 - v)
-        let yFlip = SCNMatrix4Mult(
-            SCNMatrix4MakeTranslation(0, 1, 0),
-            SCNMatrix4MakeScale(1, -1, 1)
-        )
-
         switch projection {
         case .stereoscopicSBS, .sbs180:
-            let crop = SCNMatrix4MakeScale(0.5, 1.0, 1.0)
-            cachedContentsTransform = SCNMatrix4Mult(yFlip, crop)
-            cachedWrapS = .clamp
-            cachedWrapT = .clamp
+            // Left eye (left half)
+            material.diffuse.contentsTransform = SCNMatrix4MakeScale(0.5, 1.0, 1.0)
+            material.diffuse.wrapS = .clamp
+            material.diffuse.wrapT = .clamp
 
         case .stereoscopicTB, .tb180:
-            let crop = SCNMatrix4MakeScale(1.0, 0.5, 1.0)
-            cachedContentsTransform = SCNMatrix4Mult(yFlip, crop)
-            cachedWrapS = .clamp
-            cachedWrapT = .clamp
+            // Top eye (top half)
+            material.diffuse.contentsTransform = SCNMatrix4MakeScale(1.0, 0.5, 1.0)
+            material.diffuse.wrapS = .clamp
+            material.diffuse.wrapT = .clamp
 
         default:
-            cachedContentsTransform = yFlip
-            cachedWrapS = .repeat
-            cachedWrapT = .clamp
+            material.diffuse.contentsTransform = SCNMatrix4Identity
+            material.diffuse.wrapS = .repeat
+            material.diffuse.wrapT = .clamp
         }
-
-        material.diffuse.contentsTransform = cachedContentsTransform
-        material.diffuse.wrapS = cachedWrapS
-        material.diffuse.wrapT = cachedWrapT
     }
 
-    /// Attaches an AVPlayerItemVideoOutput to extract pixel buffers in BGRA format.
-    /// This bypasses SceneKit's broken AVPlayer-as-texture path for HDR content.
-    func setupVideoOutput(player: AVPlayer) {
-        // Remove old output from previous player item
-        if let oldOutput = videoOutput, let oldItem = player.currentItem {
-            oldItem.remove(oldOutput)
-        }
+    /// Creates an SKScene with an SKVideoNode and sets it as the sphere material's texture.
+    /// SpriteKit handles AVPlayer rendering including HDR→SDR tone mapping.
+    func setupVideoTexture(player: AVPlayer) {
+        // Create SpriteKit video node from the player
+        let skVideoNode = SKVideoNode(avPlayer: player)
+        // SKScene size — use a reasonable resolution for the texture
+        let skScene = SKScene(size: CGSize(width: 2048, height: 1024))
+        skScene.scaleMode = .aspectFit
+        skScene.backgroundColor = .black
 
-        guard let playerItem = player.currentItem else { return }
+        // Position video node at center, fill the scene
+        skVideoNode.position = CGPoint(x: skScene.size.width / 2, y: skScene.size.height / 2)
+        skVideoNode.size = skScene.size
+        skScene.addChild(skVideoNode)
 
-        // Request 32-bit BGRA — forces HDR→SDR tone mapping automatically
-        let attributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: attributes)
-        playerItem.add(output)
-        videoOutput = output
+        // SKVideoNode doesn't auto-play — it mirrors the AVPlayer's play state,
+        // but we need to call play() to start rendering frames into the texture.
+        skVideoNode.play()
+
+        videoNode = skVideoNode
+        videoScene = skScene
+
+        // Set the SpriteKit scene as the material texture
+        sphereNode.geometry?.firstMaterial?.diffuse.contents = skScene
+        // Re-apply UV transform
+        applyUVTransform(projection: currentProjection)
     }
 
     func updatePlayer(_ newPlayer: AVPlayer) {
-        // Remove old output
-        if let oldOutput = videoOutput, let oldItem = currentPlayer.currentItem {
-            oldItem.remove(oldOutput)
-        }
-        videoOutput = nil
-
         currentPlayer = newPlayer
-        setupVideoOutput(player: newPlayer)
+        setupVideoTexture(player: newPlayer)
     }
 
     func updateProjection(_ newProjection: VRProjection) {
         currentProjection = newProjection
         setupSphere(projection: newProjection)
-        // No need to re-setup video output — just re-apply UV transform
+        setupVideoTexture(player: currentPlayer)
     }
 
     // MARK: - SCNSceneRendererDelegate
 
     /// Called by SceneKit on the render thread right before rendering each frame.
-    /// Updates camera orientation and copies the latest video frame as a pixel buffer texture.
+    /// Camera updates here are safe — no lock contention with the render pipeline.
     public func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
-        // Update camera
         let yaw = gyroEnabled ? gyroYaw + manualYaw : manualYaw
         let pitch = gyroEnabled ? gyroPitch + manualPitch : manualPitch
         cameraNode.eulerAngles = SCNVector3(pitch, yaw, 0)
         cameraNode.camera?.fieldOfView = CGFloat(fieldOfView)
-
-        // Copy latest video frame and set as texture
-        guard let output = videoOutput else { return }
-        let itemTime = output.itemTime(forHostTime: CACurrentMediaTime())
-        guard output.hasNewPixelBuffer(forItemTime: itemTime),
-              let pixelBuffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) else {
-            return
-        }
-        if let material = sphereNode.geometry?.firstMaterial {
-            material.diffuse.contents = pixelBuffer
-            // Re-apply UV transform — setting contents can reset contentsTransform
-            material.diffuse.contentsTransform = cachedContentsTransform
-            material.diffuse.wrapS = cachedWrapS
-            material.diffuse.wrapT = cachedWrapT
-        }
     }
 }
 
