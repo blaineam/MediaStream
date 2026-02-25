@@ -125,9 +125,13 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
         skScene.scaleMode = .aspectFit
         skScene.backgroundColor = .black
 
-        // Position video node at center, fill the scene
+        // Position video node at center, fill the scene.
+        // Y-flip the video node: SKVideoNode renders with video's top-left origin,
+        // but SKScene has bottom-left origin, so the video appears upside-down
+        // on the sphere without this flip.
         skVideoNode.position = CGPoint(x: skScene.size.width / 2, y: skScene.size.height / 2)
         skVideoNode.size = skScene.size
+        skVideoNode.yScale = -1
         skScene.addChild(skVideoNode)
 
         // SKVideoNode doesn't auto-play — it mirrors the AVPlayer's play state,
@@ -328,6 +332,8 @@ public struct VRVideoView: UIViewRepresentable {
 
     public func updateUIView(_ scnView: SCNView, context: Context) {
         let coordinator = context.coordinator
+        // Keep parent reference current so closures and @Bindings stay valid
+        coordinator.parent = self
 
         if coordinator.sceneCoordinator.currentPlayer !== player {
             coordinator.sceneCoordinator.updatePlayer(player)
@@ -403,8 +409,15 @@ public struct VRVideoView: UIViewRepresentable {
             #endif
 
             // Update coordinator directly (picked up by render delegate on render thread)
+            // Yaw: swipe right → look right (negative yaw rotates view right)
             sceneCoordinator.manualYaw -= Float(translation.x) * sensitivity
+            #if os(tvOS)
+            // tvOS Siri Remote: swipe up = positive Y, should look up (positive pitch)
+            sceneCoordinator.manualPitch += Float(translation.y) * sensitivity
+            #else
+            // iOS touch: drag up = negative Y, should look up (positive pitch)
             sceneCoordinator.manualPitch -= Float(translation.y) * sensitivity
+            #endif
             sceneCoordinator.manualPitch = max(-.pi / 2 + 0.1, min(.pi / 2 - 0.1, sceneCoordinator.manualPitch))
 
             // Sync to SwiftUI only on gesture end (avoids re-render flood during panning).
@@ -528,6 +541,8 @@ public struct VRVideoView: NSViewRepresentable {
 
     public func updateNSView(_ scnView: SCNView, context: Context) {
         let coordinator = context.coordinator
+        // Keep parent reference current so closures and @Bindings stay valid
+        coordinator.parent = self
 
         if coordinator.sceneCoordinator.currentPlayer !== player {
             coordinator.sceneCoordinator.updatePlayer(player)
