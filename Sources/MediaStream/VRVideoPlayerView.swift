@@ -389,33 +389,37 @@ public struct VRVideoPlayerView: View {
                     .foregroundColor(.white)
                     .padding(.bottom, 8)
 
-                ForEach(VRProjection.allCases, id: \.self) { proj in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            currentProjection = proj
-                            showProjectionPicker = false
-                        }
-                        onProjectionChange?(proj)
-                    } label: {
-                        HStack {
-                            Text(proj.displayName)
-                                .foregroundColor(.white)
-                            Spacer()
-                            if proj == currentProjection {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.cyan)
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(VRProjection.allCases, id: \.self) { proj in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    currentProjection = proj
+                                    showProjectionPicker = false
+                                }
+                                onProjectionChange?(proj)
+                            } label: {
+                                HStack {
+                                    Text(proj.displayName)
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    if proj == currentProjection {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.cyan)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(proj == currentProjection ? Color.white.opacity(0.15) : Color.clear)
+                                )
                             }
+                            #if os(macOS)
+                            .buttonStyle(.plain)
+                            #endif
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(proj == currentProjection ? Color.white.opacity(0.15) : Color.clear)
-                        )
                     }
-                    #if os(macOS)
-                    .buttonStyle(.plain)
-                    #endif
                 }
             }
             .padding(20)
@@ -424,10 +428,9 @@ public struct VRVideoPlayerView: View {
                     .fill(.ultraThinMaterial)
                     .environment(\.colorScheme, .dark)
             )
-            .frame(maxWidth: 260)
+            .frame(maxWidth: 260, maxHeight: 420)
         }
     }
-
 
     // MARK: - Player Setup
 
@@ -473,8 +476,12 @@ public struct VRVideoPlayerView: View {
             Task { @MainActor in
                 // Loop short videos (< 2 minutes) instead of completing
                 if duration > 0 && duration < 120, let player = avPlayer {
-                    player.seek(to: .zero)
-                    player.play()
+                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                        guard finished else { return }
+                        Task { @MainActor in
+                            player.play()
+                        }
+                    }
                     isPlaying = true
                     return
                 }

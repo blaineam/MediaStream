@@ -1,7 +1,7 @@
 # MediaStream
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-iOS%2017.0%2B%20%7C%20macOS%2014.0%2B-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/Platform-iOS%2017.0%2B%20%7C%20macOS%2014.0%2B%20%7C%20tvOS%2017.0%2B-blue" alt="Platform">
   <img src="https://img.shields.io/badge/Swift-5.9%2B-orange" alt="Swift">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
 </p>
@@ -109,6 +109,23 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
 - **Thumbnail Load Cancellation**: Grid thumbnails cancel in-flight downloads when views disappear (e.g., gallery dismiss)
 - **Media Type Re-filtering**: Grid automatically re-checks filter chips when WebP/HEIC items resolve their actual animation state after download
 - **Video Metadata Auth Headers**: `getVideoDurationWebView` and `hasAudioTrackWebView` now pass auth headers through to the WebView fallback
+
+### 🌐 VR & Stereoscopic 3D Support (v2.0.0)
+- **360/180 Spherical Video**: Renders equirectangular video on an interactive SceneKit sphere with gyroscope and touch/drag controls
+- **Stereoscopic Formats**: Side-by-Side (SBS/HSBS) and Top-Bottom (TB/HTB) projection modes for 3D content
+- **Fisheye Projection**: Metal shader-based equidistant fisheye UV remapping for fisheye-encoded content (mono, SBS, TB)
+- **2D Flat Crop Mode**: View stereoscopic content as flat 2D by cropping to one eye (left for SBS, top for TB) — works in both slideshow and grid views
+- **Automatic Detection**: Filename-based VR projection detection (e.g., `_180_sbs`, `_360`, `_fisheye`) via `VRFilenameDetector`
+- **Manual Override**: Per-item projection picker lets users manually set or change the VR projection type
+- **Smart Thumbnail Cropping**: Grid thumbnails automatically show only one eye for SBS/TB content
+- **tvOS Support**: Full VR projection controls, scrub bar, and slideshow overlay on Apple TV
+
+### 📺 tvOS Support (v2.0.0)
+- **Apple TV Media Browser**: Full-screen media viewer with native tvOS navigation and focus system
+- **Slideshow Controls**: Double-tap Play/Pause to access slideshow overlay with navigation, loop, shuffle, and interval controls
+- **VR Projection Controls**: SceneKit sphere rendering and flat crop modes on tvOS with confirmation dialog picker
+- **Recently Played**: Thumbnail cache with SBS/TB-aware cropping for recently played media
+- **Native Video Controls**: AVPlayerViewController integration with subtitle and audio track selection
 
 ### 📷 RAW Image Support
 - **Native RAW Support**: Leverages iOS/macOS ImageIO for RAW image formats
@@ -678,17 +695,25 @@ MediaStream (Package)
 ├── MediaItem (Protocol)
 │   ├── Defines interface for media items
 │   ├── Async methods for loading content
-│   └── loadThumbnail for efficient thumbnail loading (v1.1.0)
+│   ├── loadThumbnail for efficient thumbnail loading (v1.1.0)
+│   └── vrProjection for VR/3D content detection (v2.0.0)
 ├── MediaGalleryView
 │   ├── Main slideshow view
 │   ├── Zoom & pan support
 │   ├── Slideshow controls
+│   ├── 3D/2D projection toggle
 │   └── Lazy rendering (only current + adjacent items)
 ├── MediaGalleryGridView
 │   ├── Grid browsing interface
 │   ├── Multi-select mode
 │   ├── Filtering UI
+│   ├── SBS/TB thumbnail cropping
 │   └── LazyThumbnailView for visibility-based loading (v1.1.0)
+├── VRVideoPlayerView (v2.0.0)
+│   ├── SceneKit sphere rendering for 360/180 video
+│   ├── Gyroscope + drag navigation
+│   ├── Metal fisheye shader
+│   └── Projection picker overlay
 ├── ThumbnailCache (v1.1.0)
 │   ├── LRU cache with memory limit
 │   ├── Memory pressure handling
@@ -983,6 +1008,7 @@ Duration detection ensures animations play completely before advancing in slides
 
 - **iOS**: 17.0+
 - **macOS**: 14.0+
+- **tvOS**: 17.0+
 - **Swift**: 5.9+
 
 ## 📝 License

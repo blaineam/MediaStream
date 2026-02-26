@@ -84,12 +84,16 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
         sphereNode.scale = SCNVector3(-1, 1, 1)
 
         // Rotate sphere for 180° projections so the front hemisphere faces the camera
-        if projection == .equirectangular180 || projection == .sbs180 || projection == .tb180 {
+        switch projection {
+        case .equirectangular180, .sbs180, .tb180, .fisheye180, .fisheyeSBS, .fisheyeTB:
             sphereNode.eulerAngles.y = .pi
+        default:
+            break
         }
 
         scene.rootNode.addChildNode(sphereNode)
         applyUVTransform(projection: projection)
+        applyFisheyeShader(projection: projection)
     }
 
     /// Applies UV transform for the SpriteKit video texture.
@@ -99,7 +103,7 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
         guard let material = sphereNode.geometry?.firstMaterial else { return }
 
         switch projection {
-        case .stereoscopicSBS, .sbs180, .sbs:
+        case .stereoscopicSBS, .sbs180, .sbs, .fisheyeSBS:
             // Left eye (left half) — crop to 50% width, no horizontal stretch
             material.diffuse.contentsTransform = SCNMatrix4MakeScale(0.5, 1.0, 1.0)
             material.diffuse.wrapS = .clamp
@@ -113,7 +117,7 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
             material.diffuse.wrapS = .clamp
             material.diffuse.wrapT = .clamp
 
-        case .stereoscopicTB, .tb180, .tb:
+        case .stereoscopicTB, .tb180, .tb, .fisheyeTB:
             // Top eye (top half)
             material.diffuse.contentsTransform = SCNMatrix4MakeScale(1.0, 0.5, 1.0)
             material.diffuse.wrapS = .clamp
@@ -132,6 +136,73 @@ public class VRSceneCoordinator: NSObject, SCNSceneRendererDelegate {
             material.diffuse.wrapS = .repeat
             material.diffuse.wrapT = .clamp
         }
+    }
+
+    /// Applies or removes the fisheye UV remapping shader.
+    /// Fisheye (equidistant) content maps angular distance linearly to radius,
+    /// while the sphere's native UV mapping is equirectangular (lat/lon).
+    /// This shader corrects the distortion by remapping UVs on the GPU.
+    func applyFisheyeShader(projection: VRProjection) {
+        guard let material = sphereNode.geometry?.firstMaterial else { return }
+
+        guard projection.isFisheye else {
+            material.shaderModifiers?.removeValue(forKey: .surface)
+            return
+        }
+
+        // Metal shader modifier that remaps equirectangular UVs to fisheye (equidistant).
+        // The sphere's UV is equirectangular: u = longitude/2π, v = latitude/π.
+        // Fisheye maps angular distance from center linearly to image radius.
+        //
+        // Algorithm:
+        // 1. Convert equirect UV to 3D direction on the unit sphere
+        // 2. Compute angular distance from the forward axis (+Z after sphere rotation)
+        // 3. Map angle → fisheye radius (linear for equidistant projection)
+        // 4. Project back to 2D fisheye UV
+        let fisheyeShader = """
+        #pragma arguments
+        #pragma body
+        float2 uv = _surface.diffuseTexcoord;
+
+        // Equirectangular UV → 3D direction
+        float theta = uv.x * 2.0 * M_PI_F;  // longitude [0, 2π]
+        float phi = uv.y * M_PI_F;           // latitude [0, π] (top to bottom)
+
+        float3 dir;
+        dir.x = sin(phi) * sin(theta);
+        dir.y = cos(phi);
+        dir.z = sin(phi) * cos(theta);
+
+        // Angular distance from forward axis (-Z in camera space, but sphere is rotated π)
+        float angle = acos(clamp(-dir.z, -1.0, 1.0));
+
+        // Only remap the front hemisphere (180° FOV)
+        float halfFOV = M_PI_F / 2.0;
+        if (angle < halfFOV) {
+            // Fisheye equidistant: radius proportional to angle
+            float r = angle / halfFOV;  // [0, 1]
+
+            // Project direction onto the plane perpendicular to forward axis
+            float2 projected = float2(dir.x, -dir.y);
+            float projLen = length(projected);
+
+            float2 fisheyeUV;
+            if (projLen > 0.0001) {
+                fisheyeUV = float2(0.5, 0.5) + r * 0.5 * (projected / projLen);
+            } else {
+                fisheyeUV = float2(0.5, 0.5);
+            }
+
+            // Clamp to valid range
+            fisheyeUV = clamp(fisheyeUV, float2(0.0), float2(1.0));
+            _surface.diffuseTexcoord = fisheyeUV;
+        } else {
+            // Outside FOV — map to edge (black if texture doesn't extend)
+            _surface.diffuseTexcoord = float2(0.0, 0.0);
+        }
+        """
+
+        material.shaderModifiers = [.surface: fisheyeShader]
     }
 
     /// Creates an SKScene with an SKVideoNode and sets it as the sphere material's texture.

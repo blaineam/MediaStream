@@ -931,15 +931,23 @@ struct LazyThumbnailView: View {
                 Group {
                     if let thumbnail = thumbnail {
                         // Always use static Image for thumbnails (no animation in grid)
+                        // Crop SBS thumbnails to left half, TB to top half for clarity
                         #if canImport(UIKit)
-                        Image(uiImage: thumbnail)
-                            .resizable()
-                            .scaledToFill()
+                        let image = Image(uiImage: thumbnail).resizable()
                         #elseif canImport(AppKit)
-                        Image(nsImage: thumbnail)
-                            .resizable()
-                            .scaledToFill()
+                        let image = Image(nsImage: thumbnail).resizable()
                         #endif
+                        if mediaItem.vrProjection?.isSBS == true {
+                            image.scaledToFill()
+                                .frame(width: geometry.size.width * 2, height: geometry.size.width)
+                                .frame(width: geometry.size.width, height: geometry.size.width, alignment: .leading)
+                        } else if mediaItem.vrProjection?.isTB == true {
+                            image.scaledToFill()
+                                .frame(width: geometry.size.width, height: geometry.size.width * 2)
+                                .frame(width: geometry.size.width, height: geometry.size.width, alignment: .top)
+                        } else {
+                            image.scaledToFill()
+                        }
                     } else if isLoading {
                         Color.gray.opacity(0.3)
                         ProgressView()

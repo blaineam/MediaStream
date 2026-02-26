@@ -28,6 +28,9 @@ public enum VRProjection: String, CaseIterable, Codable, Sendable {
     case tb                   // Top eye of TB content shown as flat 2D (crops top half)
     case hsbs                 // Half SBS: half-width left eye stretched to full width, flat 2D
     case htb                  // Half TB: half-height top eye stretched to full height, flat 2D
+    case fisheye180           // Mono fisheye (180° FOV, equidistant radial mapping)
+    case fisheyeSBS           // SBS fisheye (left eye, 180° each)
+    case fisheyeTB            // TB fisheye (top eye, 180° each)
     case flat                 // Flat video on virtual curved screen
 
     /// Whether this projection requires a 3D sphere renderer (SceneKit).
@@ -38,6 +41,30 @@ public enum VRProjection: String, CaseIterable, Codable, Sendable {
             return false
         default:
             return true
+        }
+    }
+
+    /// Whether this projection uses fisheye (equidistant radial) mapping
+    public var isFisheye: Bool {
+        switch self {
+        case .fisheye180, .fisheyeSBS, .fisheyeTB: return true
+        default: return false
+        }
+    }
+
+    /// Whether this is a side-by-side stereo format
+    public var isSBS: Bool {
+        switch self {
+        case .stereoscopicSBS, .sbs180, .sbs, .hsbs, .fisheyeSBS: return true
+        default: return false
+        }
+    }
+
+    /// Whether this is a top-bottom stereo format
+    public var isTB: Bool {
+        switch self {
+        case .stereoscopicTB, .tb180, .tb, .htb, .fisheyeTB: return true
+        default: return false
         }
     }
 
@@ -53,7 +80,10 @@ public enum VRProjection: String, CaseIterable, Codable, Sendable {
         case .tb: return "TB"
         case .hsbs: return "Half SBS"
         case .htb: return "Half TB"
-        case .flat: return "Flat VR"
+        case .fisheye180: return "Fisheye 180\u{00B0}"
+        case .fisheyeSBS: return "3D SBS Fisheye"
+        case .fisheyeTB: return "3D TB Fisheye"
+        case .flat: return "2D"
         }
     }
 
@@ -70,7 +100,10 @@ public enum VRProjection: String, CaseIterable, Codable, Sendable {
         case .tb: return "TB"
         case .hsbs: return "HSBS"
         case .htb: return "HTB"
-        case .flat: return "Flat"
+        case .fisheye180: return "FE 180"
+        case .fisheyeSBS: return "FE SBS"
+        case .fisheyeTB: return "FE TB"
+        case .flat: return "2D"
         }
     }
 }
