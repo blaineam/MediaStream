@@ -114,6 +114,8 @@ public struct MediaGalleryFullView: View {
                 onSelectWithFilteredItems: { filteredItems, index in
                     slideshowItems = filteredItems
                     selectedIndex = index
+                    // Cancel queued grid thumbnail loads to free bandwidth for slideshow
+                    Task { await ThumbnailLoadingQueue.shared.cancelAllPending() }
                     showSlideshow = true
                 },
                 onFilterChange: { filter in
@@ -152,6 +154,8 @@ public struct MediaGalleryFullView: View {
                 slideshowItems = mediaItems
                 selectedIndex = clampedIndex
                 lastViewedIndex = clampedIndex
+                // Cancel queued grid thumbnail loads to free bandwidth for slideshow
+                Task { await ThumbnailLoadingQueue.shared.cancelAllPending() }
                 showSlideshow = true
             }
         }
@@ -1076,7 +1080,13 @@ struct LazyThumbnailView: View {
         let typeBeforeLoad = mediaItem.type
 
         loadTask = Task(priority: .utility) {
-            // Use concurrency limiting to prevent too many simultaneous loads
+            // Capture the queue generation before entering the concurrency limiter.
+            // If cancelAllPending() fires while we're queued or running, the generation
+            // will change and we bail out instead of continuing expensive IO.
+            let startGen = await ThumbnailLoadingQueue.shared.generation
+
+            // Use concurrency limiting to prevent too many simultaneous loads.
+            // withLimit returns nil if cancellation was detected while waiting.
             await ThumbnailLoadingQueue.shared.withLimit {
                 // Bail out if gallery was dismissed while waiting in the queue.
                 guard !Task.isCancelled else {
@@ -1117,6 +1127,13 @@ struct LazyThumbnailView: View {
                     return
                 }
 
+                // Skip if bulk cancellation happened during the load (slideshow opened)
+                let postLoadGen = await ThumbnailLoadingQueue.shared.generation
+                guard postLoadGen == startGen else {
+                    await MainActor.run { self.isLoading = false }
+                    return
+                }
+
                 if let thumb = thumb {
                     // Cache real thumbnails (skip caching placeholders — they regenerate instantly)
                     if !isFallback {
@@ -1137,6 +1154,13 @@ struct LazyThumbnailView: View {
                     await MainActor.run {
                         self.isLoading = false
                     }
+                }
+            }
+
+            // If withLimit returned nil (cancelled before operation ran), reset loading state
+            await MainActor.run {
+                if self.isLoading {
+                    self.isLoading = false
                 }
             }
         }

@@ -369,11 +369,19 @@ public final class DiskThumbnailCache: @unchecked Sendable {
 
 /// Actor to limit concurrent thumbnail loading operations
 public actor ThumbnailLoadingQueue {
-    public static let shared = ThumbnailLoadingQueue(maxConcurrent: 8)
+    #if os(iOS) || os(tvOS)
+    public static let shared = ThumbnailLoadingQueue(maxConcurrent: 3)
+    #else
+    public static let shared = ThumbnailLoadingQueue(maxConcurrent: 6)
+    #endif
 
     private let maxConcurrent: Int
     private var currentCount: Int = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Incremented each time `cancelAllPending()` is called. Callers that captured
+    /// a generation before entering `withLimit` can compare to detect cancellation.
+    public private(set) var generation: Int = 0
 
     public init(maxConcurrent: Int = 4) {
         self.maxConcurrent = maxConcurrent
@@ -404,9 +412,28 @@ public actor ThumbnailLoadingQueue {
         }
     }
 
-    /// Execute a thumbnail loading operation with concurrency limiting
-    public func withLimit<T>(_ operation: @Sendable () async -> T) async -> T {
+    /// Cancel all pending waiters by resuming them (they should check Task.isCancelled after acquiring)
+    /// Also bumps the generation counter so in-flight operations can detect cancellation.
+    public func cancelAllPending() {
+        generation += 1
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            currentCount += 1
+            waiter.resume()
+        }
+    }
+
+    /// Execute a thumbnail loading operation with concurrency limiting.
+    /// Checks generation before and after acquire — if `cancelAllPending()` was called
+    /// while waiting (or while running), the operation is skipped.
+    public func withLimit<T>(_ operation: @Sendable () async -> T) async -> T? {
+        let startGeneration = generation
         await acquire()
+        guard generation == startGeneration, !Task.isCancelled else {
+            await release()
+            return nil
+        }
         let result = await operation()
         await release()
         return result
