@@ -479,6 +479,28 @@ public final class MediaDownloadManager: ObservableObject {
             return
         }
 
+        // Local file:// URLs — read directly instead of going through URLSession.
+        // This covers AI-generated videos that already live on disk, including private
+        // videos that were decrypted to a temp location by loadVideoURL().
+        if sourceURL.isFileURL {
+            if MediaStreamConfiguration.encryptDownloads,
+               let provider = MediaStreamConfiguration.encryptionProvider {
+                let encryptedData = try await Task.detached(priority: .userInitiated) { () throws -> Data in
+                    let rawData = try Data(contentsOf: sourceURL)
+                    return try provider.encrypt(rawData)
+                }.value
+                try encryptedData.write(to: destinationURL, options: .atomic)
+                print("[MediaDownloadManager] Copied and encrypted local file: \(destinationURL.lastPathComponent)")
+            } else {
+                try await Task.detached(priority: .userInitiated) {
+                    let rawData = try Data(contentsOf: sourceURL)
+                    try rawData.write(to: destinationURL, options: .atomic)
+                }.value
+                print("[MediaDownloadManager] Copied local file: \(destinationURL.lastPathComponent)")
+            }
+            return
+        }
+
         // Get headers for authenticated requests
         let headers = await headerProvider(sourceURL)
 
