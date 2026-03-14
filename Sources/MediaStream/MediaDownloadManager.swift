@@ -421,6 +421,25 @@ public final class MediaDownloadManager: ObservableObject {
         tempPlaybackFiles.removeAll()
     }
 
+    /// Delete all encrypted download files (.enc). Used when the passphrase is
+    /// removed or changed — the files can no longer be decrypted, so they are
+    /// discarded. Downloads will be re-fetched on demand.
+    public func clearEncryptedDownloads() {
+        guard let enumerator = fileManager.enumerator(
+            at: downloadDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        var count = 0
+        while let fileURL = enumerator.nextObject() as? URL {
+            if fileURL.pathExtension == MediaDownloadManager.encryptedSuffix {
+                try? fileManager.removeItem(at: fileURL)
+                count += 1
+            }
+        }
+        print("[MediaDownloadManager] Cleared \(count) encrypted download files")
+    }
+
     /// Get current cache statistics
     public var stats: (fileCount: Int, diskMB: Double) {
         var totalSize: Int64 = 0
