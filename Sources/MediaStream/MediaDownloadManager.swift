@@ -167,20 +167,23 @@ public final class MediaDownloadManager: ObservableObject {
             return fileURL
         }
 
-        // Decrypt to a temp file for playback
+        // Decrypt to a temp file for playback.
+        // Run I/O and crypto on a background thread — both Data(contentsOf:) and
+        // AES-GCM decryption are synchronous and can block for seconds on large
+        // video files, which would freeze the UI if run on the main actor.
+        let originalExt = fileURL.deletingPathExtension().pathExtension
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ms_play_\(UUID().uuidString)")
+            .appendingPathExtension(originalExt)
+
         do {
-            let encryptedData = try Data(contentsOf: fileURL)
-            let decryptedData = try provider.decrypt(encryptedData)
+            try await Task.detached(priority: .userInitiated) {
+                let encryptedData = try Data(contentsOf: fileURL)
+                let decryptedData = try provider.decrypt(encryptedData)
+                try decryptedData.write(to: tempURL)
+            }.value
 
-            // Determine original extension (filename is {cacheKey}.{ext}.enc)
-            let originalExt = fileURL.deletingPathExtension().pathExtension
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("ms_play_\(UUID().uuidString)")
-                .appendingPathExtension(originalExt)
-
-            try decryptedData.write(to: tempURL)
-
-            // Track temp file for cleanup
+            // Track temp file for cleanup (back on main actor)
             tempPlaybackFiles.append(tempURL)
             pruneOldTempFiles()
 
@@ -347,26 +350,6 @@ public final class MediaDownloadManager: ObservableObject {
            contents.isEmpty {
             downloadState = .idle
         }
-    }
-
-    /// Clear all encrypted downloaded files without decrypting them.
-    /// Use this when the passphrase is removed and decryption is no longer possible.
-    /// Files will be re-downloaded with the new encryption state on demand.
-    public func clearEncryptedDownloads() {
-        guard let enumerator = fileManager.enumerator(
-            at: downloadDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        var count = 0
-        while let fileURL = enumerator.nextObject() as? URL {
-            if fileURL.pathExtension == "enc" {
-                try? fileManager.removeItem(at: fileURL)
-                count += 1
-            }
-        }
-        print("[MediaDownloadManager] Cleared \(count) encrypted download files")
     }
 
     /// Migrate existing downloaded files when the encryptDownloads setting changes.
