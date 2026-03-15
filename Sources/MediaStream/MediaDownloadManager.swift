@@ -243,8 +243,11 @@ public final class MediaDownloadManager: ObservableObject {
                     return
                 }
 
-                // Get source URL - try sourceURL first, then load asynchronously
+                // Get source URL - try sourceURL first, then load asynchronously.
+                // isEphemeralSource tracks whether the URL was written to a temp file
+                // by loadImageURL() so we can clean it up after the download finishes.
                 let sourceURL: URL?
+                var isEphemeralSource = false
                 if let directURL = item.sourceURL {
                     sourceURL = directURL
                 } else if item.type == .video {
@@ -252,8 +255,12 @@ public final class MediaDownloadManager: ObservableObject {
                 } else if item.type == .audio {
                     sourceURL = await item.loadAudioURL()
                 } else if item.type == .image || item.type == .animatedImage {
-                    // loadImageURL() returns a file:// URL (decrypted to temp for private items)
-                    sourceURL = await item.loadImageURL()
+                    // loadImageURL() may decrypt to a temp file for private items
+                    let url = await item.loadImageURL()
+                    sourceURL = url
+                    if let url, url.path.hasPrefix(FileManager.default.temporaryDirectory.path) {
+                        isEphemeralSource = true
+                    }
                 } else {
                     sourceURL = nil
                 }
@@ -294,8 +301,14 @@ public final class MediaDownloadManager: ObservableObject {
                     )
                     completedCount += 1
                     downloadState = .downloading(completed: completedCount, total: itemsToDownload.count)
+                    // Clean up ephemeral temp file created by loadImageURL() for private items
+                    if isEphemeralSource {
+                        try? FileManager.default.removeItem(at: sourceURL)
+                    }
                 } catch {
                     if Task.isCancelled {
+                        // Also clean up on cancellation
+                        if isEphemeralSource { try? FileManager.default.removeItem(at: sourceURL) }
                         downloadState = .cancelled
                         progress = nil
                         return
@@ -303,6 +316,8 @@ public final class MediaDownloadManager: ObservableObject {
                     print("[MediaDownloadManager] Failed to download \(itemName): \(error)")
                     completedCount += 1  // Continue with next item
                     downloadState = .downloading(completed: completedCount, total: itemsToDownload.count)
+                    // Clean up even on failure
+                    if isEphemeralSource { try? FileManager.default.removeItem(at: sourceURL) }
                 }
             }
 
