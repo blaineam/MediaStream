@@ -1011,6 +1011,14 @@ Duration detection ensures animations play completely before advancing in slides
 - **tvOS**: 17.0+
 - **Swift**: 5.9+
 
+## Security
+
+- Comprehensive security audit completed April 2026
+- Content Security Policy hardening in WKWebView video player
+- Temp file permission hardening and automatic cleanup
+- HTML/JavaScript injection prevention
+- Canvas DoS mitigation
+
 ## 📝 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
