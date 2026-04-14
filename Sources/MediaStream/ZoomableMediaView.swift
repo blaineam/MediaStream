@@ -2529,14 +2529,15 @@ struct ZoomableMediaView: View {
                         asset = AVURLAsset(url: url)
                     }
                     let playerItem = AVPlayerItem(asset: asset)
-                    // Buffer aggressively for remote streams to reduce stalling on slow connections
+                    // Buffer aggressively for remote streams to reduce stalling on slow connections.
+                    // Keep automaticallyWaitsToMinimizeStalling=true (default) so the player
+                    // waits for enough data before starting, avoiding constant stall/resume cycles
+                    // on slow or encrypted remotes.
                     if !url.isFileURL {
                         playerItem.preferredForwardBufferDuration = 30
+                        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
                     }
                     let player = AVPlayer(playerItem: playerItem)
-                    if !url.isFileURL {
-                        player.automaticallyWaitsToMinimizeStalling = false
-                    }
 
                     // Wait a moment to check if AVPlayer can load the video
                     do {
