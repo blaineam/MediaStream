@@ -248,6 +248,15 @@ public struct VRVideoPlayerView: View {
                 externalSeekRequest = nil
             }
         }
+        // Gallery-level pause broadcast — VR videos hold their own AVPlayer in
+        // @State (not the one ZoomableMediaView's listener pauses), so we need
+        // our own subscriber here so 360/VR slides stop on slide navigation.
+        .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.externalPauseNotification)) { _ in
+            if let player, player.rate > 0 {
+                player.pause()
+                isPlaying = false
+            }
+        }
         #if os(tvOS)
         // Play/pause works at any time — no UIKit view intercepts it now
         .onPlayPauseCommand {

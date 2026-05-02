@@ -2066,6 +2066,21 @@ struct ZoomableMediaView: View {
         .onChange(of: scale) { _, newScale in
             onZoomChanged(newScale > minScale)
         }
+        // Cross-platform: listen for the gallery-level "pause everything that's
+        // playing" broadcast (used when the user navigates between slides). This
+        // is independent of the iOS lock-screen / background plumbing below.
+        .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.externalPauseNotification)) { _ in
+            // Always pause whatever this slide is holding — idempotent and cheap.
+            audioPlayer?.pause()
+            videoPlayer?.pause()
+            #if canImport(WebKit)
+            if useWebViewForVideo { videoController.pause() }
+            #endif
+            // Belt-and-suspenders: also stop the service-level shared audio player
+            // in case our local audioPlayer reference hasn't been wired up yet
+            // (e.g. AudioPlayerControlsView mounts its observer asynchronously).
+            MediaPlaybackService.shared.sharedAudioPlayer?.pause()
+        }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.shouldPauseForBackgroundNotification)) { _ in
             // Only continue background playback for cached, unencrypted media
@@ -2119,21 +2134,28 @@ struct ZoomableMediaView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.externalPauseNotification)) { _ in
-            // Handle remote pause command for cached media
-            // More lenient check: if our player is playing, we should pause it
-            let isCached = MediaDownloadManager.shared.isCached(mediaItem: mediaItem)
-            let isRegisteredPlayer = (mediaItem.type == .audio && audioPlayer != nil && MediaPlaybackService.shared.externalPlayer === audioPlayer) ||
-                                    (mediaItem.type == .video && videoPlayer != nil && MediaPlaybackService.shared.externalPlayer === videoPlayer)
-            // Also pause if our player is actively playing (rate > 0) - this catches orphaned players
-            let hasPlayingPlayer = (mediaItem.type == .audio && audioPlayer != nil && audioPlayer!.rate > 0) ||
-                                   (mediaItem.type == .video && videoPlayer != nil && videoPlayer!.rate > 0)
-            guard isCached && (isCurrentSlide || isRegisteredPlayer || hasPlayingPlayer) else { return }
+            // Pause whenever our player is playing — covers both lock-screen pause
+            // (cached media) and gallery slide navigation (uncached/streamed media).
+            // The cache gate that used to be here meant streamed videos in the
+            // rclone-served case kept playing on the previous slide forever.
+            let isAudioPlaying = mediaItem.type == .audio && audioPlayer != nil && audioPlayer!.rate > 0
+            let isVideoPlaying = mediaItem.type == .video && videoPlayer != nil && videoPlayer!.rate > 0
+            #if canImport(WebKit)
+            let isWebVideoPlaying = mediaItem.type == .video && useWebViewForVideo && videoController.isPlaying
+            #else
+            let isWebVideoPlaying = false
+            #endif
+            guard isAudioPlaying || isVideoPlaying || isWebVideoPlaying else { return }
             if mediaItem.type == .video {
+                #if canImport(WebKit)
                 if useWebViewForVideo {
                     videoController.pause()
                 } else {
                     videoPlayer?.pause()
                 }
+                #else
+                videoPlayer?.pause()
+                #endif
             } else if mediaItem.type == .audio {
                 audioPlayer?.pause()
             }
