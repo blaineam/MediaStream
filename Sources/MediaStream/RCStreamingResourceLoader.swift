@@ -156,8 +156,13 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
         if !pending.contentInfoFilled, let info = pending.loadingRequest.contentInformationRequest,
            let http = response as? HTTPURLResponse {
             info.contentType = http.value(forHTTPHeaderField: "Content-Type")
-            info.isByteRangeAccessSupported = (http.value(forHTTPHeaderField: "Accept-Ranges") ?? "")
-                .lowercased().contains("bytes")
+            // Force-true: the rclone HTTP server always supports byte-range
+            // requests, but a 200 OK response (when the server returns the
+            // whole body for a 0-1 range probe) won't include
+            // `Accept-Ranges: bytes`. Reporting false here makes AVPlayer
+            // fall back to fetching the entire file before playback —
+            // which is exactly the slow path the user just hit.
+            info.isByteRangeAccessSupported = true
             // For 206 partial content, Content-Range carries the total length.
             if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
                let total = contentRange.split(separator: "/").last,
@@ -212,16 +217,24 @@ extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
         }
 
         // Build the Range header on the AV-owned queue while the request is
-        // still safe to inspect.
+        // still safe to inspect. AVPlayer issues many concurrent range
+        // requests for streaming; each one needs its `Range` to match the
+        // dataRequest exactly, with a left-open form for "to end of file"
+        // so the server can keep streaming without our needing to know
+        // total length.
         var rangeHeader: String? = nil
         if let dataReq = loadingRequest.dataRequest {
             let lower = dataReq.requestedOffset
-            let length = dataReq.requestedLength
-            if length > 0 {
-                let upper = lower + Int64(length) - 1
-                rangeHeader = "bytes=\(lower)-\(upper)"
-            } else if lower > 0 {
+            if dataReq.requestsAllDataToEndOfResource {
                 rangeHeader = "bytes=\(lower)-"
+            } else {
+                let length = dataReq.requestedLength
+                if length > 0 {
+                    let upper = lower + Int64(length) - 1
+                    rangeHeader = "bytes=\(lower)-\(upper)"
+                } else if lower > 0 {
+                    rangeHeader = "bytes=\(lower)-"
+                }
             }
         } else if loadingRequest.contentInformationRequest != nil {
             rangeHeader = "bytes=0-1"
