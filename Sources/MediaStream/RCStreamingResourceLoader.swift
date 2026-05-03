@@ -197,7 +197,41 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
 extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
                                 shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
-        startLoading(loadingRequest: loadingRequest)
+        // Capture all needed values from the loading request synchronously here
+        // (the request has thread-affinity to the AV worker queue and can't be
+        // dereferenced freely from a Task) and then dispatch the actual fetch
+        // off-queue so we can read MediaStreamConfiguration.headersAsync from
+        // the main actor.
+        guard let sentinelURL = loadingRequest.request.url,
+              let httpsURL = Self.realURL(for: sentinelURL) else {
+            loadingRequest.finishLoading(
+                with: NSError(domain: "RCStreamingResourceLoader", code: -1,
+                              userInfo: [NSLocalizedDescriptionKey: "Could not translate sentinel URL"])
+            )
+            return true
+        }
+
+        // Build the Range header on the AV-owned queue while the request is
+        // still safe to inspect.
+        var rangeHeader: String? = nil
+        if let dataReq = loadingRequest.dataRequest {
+            let lower = dataReq.requestedOffset
+            let length = dataReq.requestedLength
+            if length > 0 {
+                let upper = lower + Int64(length) - 1
+                rangeHeader = "bytes=\(lower)-\(upper)"
+            } else if lower > 0 {
+                rangeHeader = "bytes=\(lower)-"
+            }
+        } else if loadingRequest.contentInformationRequest != nil {
+            rangeHeader = "bytes=0-1"
+        }
+
+        Task { [weak self] in
+            await self?.kickOffFetch(loadingRequest: loadingRequest,
+                                     httpsURL: httpsURL,
+                                     rangeHeader: rangeHeader)
+        }
         return true
     }
 
@@ -206,37 +240,20 @@ extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
         cancelLoading(loadingRequest: loadingRequest)
     }
 
-    private func startLoading(loadingRequest: AVAssetResourceLoadingRequest) {
-        guard let sentinelURL = loadingRequest.request.url,
-              let httpsURL = Self.realURL(for: sentinelURL) else {
-            loadingRequest.finishLoading(
-                with: NSError(domain: "RCStreamingResourceLoader", code: -1,
-                              userInfo: [NSLocalizedDescriptionKey: "Could not translate sentinel URL"])
-            )
-            return
-        }
-
+    /// Async tail of `shouldWaitForLoadingOfRequestedResource`. Reads auth
+    /// headers from the main actor (where `MediaStreamConfiguration` lives),
+    /// builds the `URLRequest`, and starts the data task. Splitting it like
+    /// this avoids `MainActor.assumeIsolated` from a non-main queue, which
+    /// would trap.
+    private func kickOffFetch(loadingRequest: AVAssetResourceLoadingRequest,
+                              httpsURL: URL,
+                              rangeHeader: String?) async {
         var request = URLRequest(url: httpsURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
-
-        // Range header: prefer the explicit dataRequest range. If only a
-        // contentInformationRequest is set, ask for a tiny first chunk so
-        // headers come back without dragging the whole file.
-        if let dataReq = loadingRequest.dataRequest {
-            let lower = dataReq.requestedOffset
-            let length = dataReq.requestedLength
-            if length > 0 {
-                let upper = lower + Int64(length) - 1
-                request.setValue("bytes=\(lower)-\(upper)", forHTTPHeaderField: "Range")
-            } else if lower > 0 {
-                request.setValue("bytes=\(lower)-", forHTTPHeaderField: "Range")
-            }
-        } else if loadingRequest.contentInformationRequest != nil {
-            request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        if let rangeHeader = rangeHeader {
+            request.setValue(rangeHeader, forHTTPHeaderField: "Range")
         }
-
-        // Auth + custom headers from the host (rclone Basic auth).
-        if let headers = MediaStreamConfiguration.headers(for: httpsURL) {
+        if let headers = await MediaStreamConfiguration.headersAsync(for: httpsURL) {
             for (key, value) in headers {
                 request.setValue(value, forHTTPHeaderField: key)
             }
