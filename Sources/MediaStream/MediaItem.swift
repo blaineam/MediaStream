@@ -188,11 +188,22 @@ public enum MediaStreamConfiguration {
     @MainActor
     public static var encryptDownloads: Bool = false
 
-    /// Whether background audio playback (mini player, lock screen controls) is enabled.
-    /// Set to false when encryptDownloads is true.
-    /// When false, media pauses when the app is backgrounded.
+    /// Backing storage. The public accessor below auto-disables background
+    /// playback whenever `encryptDownloads` is on, since AVPlayer can't
+    /// stream from an encrypted-at-rest blob in the background.
     @MainActor
-    public static var backgroundAudioEnabled: Bool = true
+    private static var _backgroundAudioEnabled: Bool = true
+
+    /// Whether background audio playback (mini player, lock screen controls)
+    /// is enabled. Effective value is `_backgroundAudioEnabled && !encryptDownloads`
+    /// — encrypted-at-rest cached files require the foreground decrypt
+    /// helper, so the lock-screen path can't reach them. The host app can
+    /// still set this freely; we override the getter to enforce the gate.
+    @MainActor
+    public static var backgroundAudioEnabled: Bool {
+        get { _backgroundAudioEnabled && !encryptDownloads }
+        set { _backgroundAudioEnabled = newValue }
+    }
 
     /// Closure type for loading a saved playback position for a media item.
     /// Returns the saved position in seconds, or nil if no saved position exists.

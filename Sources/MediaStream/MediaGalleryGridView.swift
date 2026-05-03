@@ -132,9 +132,23 @@ public struct MediaGalleryFullView: View {
                     initialIndex: selectedIndex,
                     configuration: configuration,
                     onDismiss: {
+                        // Leaving the player counts as "navigate away from
+                        // the playing item" — broadcast a pause so audio /
+                        // video stops instead of leaking into the grid.
+                        NotificationCenter.default.post(
+                            name: MediaPlaybackService.externalPauseNotification,
+                            object: nil
+                        )
                         showSlideshow = false
                     },
                     onBackToGrid: {
+                        // Same reason as onDismiss — going back to grid
+                        // shouldn't keep the just-viewed item playing in
+                        // the background.
+                        NotificationCenter.default.post(
+                            name: MediaPlaybackService.externalPauseNotification,
+                            object: nil
+                        )
                         showSlideshow = false
                     },
                     onIndexChange: { index in
