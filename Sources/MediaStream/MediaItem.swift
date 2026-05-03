@@ -217,21 +217,37 @@ public enum MediaStreamConfiguration {
     /// to a self-signed-cert host (typically a loopback RC server).
     public typealias ServerTrustEvaluator = @Sendable (SecTrust, String) -> Bool
 
-    /// Set this in your app to opt the library into trusting your
-    /// self-signed RC certificate. Called whenever a URLSession or WebView
-    /// inside MediaStream encounters an `NSURLAuthenticationMethodServerTrust`
-    /// challenge. Returning false from this closure (or leaving it nil)
-    /// means MediaStream falls back to system trust — i.e., self-signed
-    /// loopback hosts won't load.
-    @MainActor
-    public static var serverTrustEvaluator: ServerTrustEvaluator?
+    /// Lock-guarded storage so URLSession / resource-loader trust delegates
+    /// (which run on `com.apple.NSURLSession-delegate` and have synchronous
+    /// completion handlers) can read the evaluator without an actor hop.
+    /// `MainActor.assumeIsolated` traps off-main, which crashed the moment
+    /// any HTTPS request hit the loopback host.
+    private static let _trustEvaluatorLock = NSLock()
+    nonisolated(unsafe) private static var _trustEvaluator: ServerTrustEvaluator?
 
-    /// Helper for delegate code that needs the evaluator from a
-    /// non-actor-isolated context.
-    public static func evaluateServerTrust(_ trust: SecTrust, host: String) -> Bool {
-        return MainActor.assumeIsolated {
-            serverTrustEvaluator?(trust, host) ?? false
+    /// Set this in your app to opt the library into trusting your
+    /// self-signed RC certificate. Reads/writes are lock-guarded so it
+    /// can be queried from any thread.
+    public static var serverTrustEvaluator: ServerTrustEvaluator? {
+        get {
+            _trustEvaluatorLock.lock()
+            defer { _trustEvaluatorLock.unlock() }
+            return _trustEvaluator
         }
+        set {
+            _trustEvaluatorLock.lock()
+            defer { _trustEvaluatorLock.unlock() }
+            _trustEvaluator = newValue
+        }
+    }
+
+    /// Helper for delegate code that needs the evaluator. Always safe to
+    /// call from any queue.
+    public static func evaluateServerTrust(_ trust: SecTrust, host: String) -> Bool {
+        _trustEvaluatorLock.lock()
+        let evaluator = _trustEvaluator
+        _trustEvaluatorLock.unlock()
+        return evaluator?(trust, host) ?? false
     }
 
     /// Get headers for a URL using the configured provider
