@@ -789,7 +789,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         currentMediaURL = url
         nowPlayingInfo = info
 
-        let asset = AVURLAsset(url: url)
+        let asset = AVURLAsset.makeForRCStream(url: url)
         playerItem = AVPlayerItem(asset: asset)
         player = AVPlayer(playerItem: playerItem)
 
@@ -1533,11 +1533,11 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             let asset: AVURLAsset
             if let headers = headers, !headers.isEmpty {
                 // Remote file requiring authentication
-                asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+                asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
                 print("[MediaPlaybackService] Loading audio with auth headers")
             } else {
                 // Local cached file or no auth needed
-                asset = AVURLAsset(url: url)
+                asset = AVURLAsset.makeForRCStream(url: url)
             }
             let newItem = AVPlayerItem(asset: asset)
             sharedAudioPlayer?.replaceCurrentItem(with: newItem)

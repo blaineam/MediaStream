@@ -1246,12 +1246,27 @@ extension WebViewVideoController: WKNavigationDelegate {
         #endif
     }
 
-    /// Handle HTTP Basic Auth challenges for video requests
+    /// Handle HTTP Basic Auth + Server Trust challenges for video requests.
+    /// Server trust pinning lets WKWebView load <video src=...> from a host
+    /// that uses a self-signed cert (typically the app's loopback RC server),
+    /// which is a prerequisite for the host app stripping ATS exceptions.
     nonisolated public func webView(
         _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let serverTrust = challenge.protectionSpace.serverTrust {
+            let host = challenge.protectionSpace.host
+            if MediaStreamConfiguration.evaluateServerTrust(serverTrust, host: host) {
+                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                return
+            }
+            // No evaluator wired up, or evaluator rejected — let the system
+            // perform its standard validation (which fails for self-signed).
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
         // Only handle HTTP Basic Auth
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodHTTPBasic else {
             completionHandler(.performDefaultHandling, nil)

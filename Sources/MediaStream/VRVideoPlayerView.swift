@@ -446,9 +446,9 @@ public struct VRVideoPlayerView: View {
     private func setupPlayer() {
         let asset: AVURLAsset
         if !authHeaders.isEmpty {
-            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": authHeaders])
+            asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": authHeaders])
         } else {
-            asset = AVURLAsset(url: url)
+            asset = AVURLAsset.makeForRCStream(url: url)
         }
 
         let playerItem = AVPlayerItem(asset: asset)

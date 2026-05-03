@@ -777,9 +777,9 @@ extension ThumbnailCache {
     ) async -> PlatformImage? {
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {
-            asset = AVURLAsset(url: videoURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            asset = AVURLAsset.makeForRCStream(url: videoURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            asset = AVURLAsset(url: videoURL)
+            asset = AVURLAsset.makeForRCStream(url: videoURL)
         }
 
         let imageGenerator = AVAssetImageGenerator(asset: asset)
@@ -942,9 +942,9 @@ extension ThumbnailCache {
         let headers = MediaStreamConfiguration.headers(for: videoURL)
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {
-            asset = AVURLAsset(url: videoURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            asset = AVURLAsset.makeForRCStream(url: videoURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            asset = AVURLAsset(url: videoURL)
+            asset = AVURLAsset.makeForRCStream(url: videoURL)
         }
 
         let imageGenerator = AVAssetImageGenerator(asset: asset)

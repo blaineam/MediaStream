@@ -44,9 +44,9 @@ public enum VideoMetadata {
         // Try AVFoundation first (more reliable for supported formats)
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {
-            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            asset = AVURLAsset(url: url)
+            asset = AVURLAsset.makeForRCStream(url: url)
         }
 
         do {
@@ -95,9 +95,9 @@ public enum VideoMetadata {
         // Try AVFoundation first (more reliable for supported formats)
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {
-            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            asset = AVURLAsset(url: url)
+            asset = AVURLAsset.makeForRCStream(url: url)
         }
 
         do {
@@ -136,7 +136,7 @@ public enum VideoMetadata {
     public static func getVideoInfo(from url: URL, headers: [String: String]? = nil, timeout: TimeInterval = 10) async -> VideoInfo {
         // For HTTP URLs with headers, try AVFoundation first
         if !url.isFileURL && headers != nil {
-            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers!])
+            let asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers!])
 
             var avDuration: TimeInterval?
             var avHasAudio: Bool?

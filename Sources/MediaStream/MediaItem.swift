@@ -188,11 +188,22 @@ public enum MediaStreamConfiguration {
     @MainActor
     public static var encryptDownloads: Bool = false
 
-    /// Whether background audio playback (mini player, lock screen controls) is enabled.
-    /// Set to false when encryptDownloads is true.
-    /// When false, media pauses when the app is backgrounded.
+    /// Backing storage. The public accessor below auto-disables background
+    /// playback whenever `encryptDownloads` is on, since AVPlayer can't
+    /// stream from an encrypted-at-rest blob in the background.
     @MainActor
-    public static var backgroundAudioEnabled: Bool = true
+    private static var _backgroundAudioEnabled: Bool = true
+
+    /// Whether background audio playback (mini player, lock screen controls)
+    /// is enabled. Effective value is `_backgroundAudioEnabled && !encryptDownloads`
+    /// — encrypted-at-rest cached files require the foreground decrypt
+    /// helper, so the lock-screen path can't reach them. The host app can
+    /// still set this freely; we override the getter to enforce the gate.
+    @MainActor
+    public static var backgroundAudioEnabled: Bool {
+        get { _backgroundAudioEnabled && !encryptDownloads }
+        set { _backgroundAudioEnabled = newValue }
+    }
 
     /// Closure type for loading a saved playback position for a media item.
     /// Returns the saved position in seconds, or nil if no saved position exists.
@@ -210,6 +221,45 @@ public enum MediaStreamConfiguration {
     /// The position saver closure — set this in your app to persist playback positions
     @MainActor
     public static var positionSaver: PositionSaver?
+
+    /// Closure type for evaluating server trust against an app-managed pin.
+    /// Return true to accept the cert, false to defer to system trust.
+    /// Used by every URLSession / WKWebView in the library that might talk
+    /// to a self-signed-cert host (typically a loopback RC server).
+    public typealias ServerTrustEvaluator = @Sendable (SecTrust, String) -> Bool
+
+    /// Lock-guarded storage so URLSession / resource-loader trust delegates
+    /// (which run on `com.apple.NSURLSession-delegate` and have synchronous
+    /// completion handlers) can read the evaluator without an actor hop.
+    /// `MainActor.assumeIsolated` traps off-main, which crashed the moment
+    /// any HTTPS request hit the loopback host.
+    private static let _trustEvaluatorLock = NSLock()
+    nonisolated(unsafe) private static var _trustEvaluator: ServerTrustEvaluator?
+
+    /// Set this in your app to opt the library into trusting your
+    /// self-signed RC certificate. Reads/writes are lock-guarded so it
+    /// can be queried from any thread.
+    public static var serverTrustEvaluator: ServerTrustEvaluator? {
+        get {
+            _trustEvaluatorLock.lock()
+            defer { _trustEvaluatorLock.unlock() }
+            return _trustEvaluator
+        }
+        set {
+            _trustEvaluatorLock.lock()
+            defer { _trustEvaluatorLock.unlock() }
+            _trustEvaluator = newValue
+        }
+    }
+
+    /// Helper for delegate code that needs the evaluator. Always safe to
+    /// call from any queue.
+    public static func evaluateServerTrust(_ trust: SecTrust, host: String) -> Bool {
+        _trustEvaluatorLock.lock()
+        let evaluator = _trustEvaluator
+        _trustEvaluatorLock.unlock()
+        return evaluator?(trust, host) ?? false
+    }
 
     /// Get headers for a URL using the configured provider
     public static func headers(for url: URL) -> [String: String]? {
@@ -650,9 +700,9 @@ public struct AudioMediaItem: MediaItem {
         let headers = await MediaStreamConfiguration.headersAsync(for: url)
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {
-            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            asset = AVURLAsset(url: url)
+            asset = AVURLAsset.makeForRCStream(url: url)
         }
 
         do {
