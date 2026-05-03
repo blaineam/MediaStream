@@ -211,6 +211,29 @@ public enum MediaStreamConfiguration {
     @MainActor
     public static var positionSaver: PositionSaver?
 
+    /// Closure type for evaluating server trust against an app-managed pin.
+    /// Return true to accept the cert, false to defer to system trust.
+    /// Used by every URLSession / WKWebView in the library that might talk
+    /// to a self-signed-cert host (typically a loopback RC server).
+    public typealias ServerTrustEvaluator = @Sendable (SecTrust, String) -> Bool
+
+    /// Set this in your app to opt the library into trusting your
+    /// self-signed RC certificate. Called whenever a URLSession or WebView
+    /// inside MediaStream encounters an `NSURLAuthenticationMethodServerTrust`
+    /// challenge. Returning false from this closure (or leaving it nil)
+    /// means MediaStream falls back to system trust — i.e., self-signed
+    /// loopback hosts won't load.
+    @MainActor
+    public static var serverTrustEvaluator: ServerTrustEvaluator?
+
+    /// Helper for delegate code that needs the evaluator from a
+    /// non-actor-isolated context.
+    public static func evaluateServerTrust(_ trust: SecTrust, host: String) -> Bool {
+        return MainActor.assumeIsolated {
+            serverTrustEvaluator?(trust, host) ?? false
+        }
+    }
+
     /// Get headers for a URL using the configured provider
     public static func headers(for url: URL) -> [String: String]? {
         let raw = MainActor.assumeIsolated {
@@ -650,9 +673,9 @@ public struct AudioMediaItem: MediaItem {
         let headers = await MediaStreamConfiguration.headersAsync(for: url)
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {
-            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            asset = AVURLAsset(url: url)
+            asset = AVURLAsset.makeForRCStream(url: url)
         }
 
         do {

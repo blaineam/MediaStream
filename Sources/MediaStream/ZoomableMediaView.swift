@@ -2546,9 +2546,9 @@ struct ZoomableMediaView: View {
                     let headers = await MediaStreamConfiguration.headersAsync(for: url)
                     let asset: AVURLAsset
                     if let headers = headers, !headers.isEmpty {
-                        asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+                        asset = AVURLAsset.makeForRCStream(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
                     } else {
-                        asset = AVURLAsset(url: url)
+                        asset = AVURLAsset.makeForRCStream(url: url)
                     }
                     let playerItem = AVPlayerItem(asset: asset)
                     // Buffer aggressively for remote streams to reduce stalling on slow connections.

@@ -1482,7 +1482,7 @@ fileprivate struct PreviewSampleMedia {
             thumbnailLoader: {
                 print("🌐 Loading networked MP4 video thumbnail...")
                 // Try to generate thumbnail using AVFoundation with network support
-                let asset = AVURLAsset(url: networkVideoURL)
+                let asset = AVURLAsset.makeForRCStream(url: networkVideoURL)
                 let imageGenerator = AVAssetImageGenerator(asset: asset)
                 imageGenerator.appliesPreferredTrackTransform = true
 
