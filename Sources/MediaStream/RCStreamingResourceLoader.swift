@@ -201,7 +201,7 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
 
 extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
-                                shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
+                               shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
         // Capture all needed values from the loading request synchronously here
         // (the request has thread-affinity to the AV worker queue and can't be
         // dereferenced freely from a Task) and then dispatch the actual fetch
@@ -249,7 +249,7 @@ extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
     }
 
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
-                                didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+                               didCancel loadingRequest: AVAssetResourceLoadingRequest) {
         cancelLoading(loadingRequest: loadingRequest)
     }
 
