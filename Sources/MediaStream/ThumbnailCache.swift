@@ -673,6 +673,12 @@ extension ThumbnailCache {
         }
         #elseif canImport(AppKit)
         let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            // Zero-sized source can't be downsampled — return the original
+            // so callers don't observe a sudden nil and fall through to a
+            // placeholder.
+            return image
+        }
         let aspectRatio = imageSize.width / imageSize.height
 
         let thumbnailSize: NSSize
@@ -682,14 +688,43 @@ extension ThumbnailCache {
             thumbnailSize = NSSize(width: targetSize * aspectRatio, height: targetSize)
         }
 
-        let newImage = NSImage(size: thumbnailSize)
-        newImage.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: thumbnailSize),
-                   from: NSRect(origin: .zero, size: imageSize),
-                   operation: .copy,
-                   fraction: 1.0)
-        newImage.unlockFocus()
-        return newImage
+        // CGContext-based downsample. NSImage.lockFocus / unlockFocus are
+        // documented as NOT thread-safe and rely on the calling thread's
+        // current NSGraphicsContext — when the gallery's thumbnail loader
+        // runs off-main (Task priority .utility), lockFocus silently
+        // produces a transparent NSImage and every image cell renders as
+        // the bare gray cell background. CGContext lives below AppKit's
+        // drawing layer and is safe from any thread.
+        var proposedRect = NSRect(origin: .zero, size: imageSize)
+        guard let cgImage = image.cgImage(
+            forProposedRect: &proposedRect,
+            context: nil,
+            hints: nil
+        ) else {
+            return image
+        }
+
+        let width = max(1, Int(thumbnailSize.width.rounded()))
+        let height = max(1, Int(thumbnailSize.height.rounded()))
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo: UInt32 =
+            CGImageAlphaInfo.premultipliedLast.rawValue
+            | CGBitmapInfo.byteOrder32Big.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return image
+        }
+        context.interpolationQuality = .high
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let resized = context.makeImage() else { return image }
+        return NSImage(cgImage: resized, size: thumbnailSize)
         #endif
     }
 
