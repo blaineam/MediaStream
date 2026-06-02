@@ -2838,19 +2838,45 @@ struct ZoomableMediaView: View {
             image.draw(in: CGRect(origin: .zero, size: newSize))
         }
         #elseif canImport(AppKit)
-        let newSize = NSSize(
-            width: image.size.width * scaleFactor,
-            height: image.size.height * scaleFactor
-        )
+        // CGContext-based downsample. The prior NSImage.lockFocus / draw /
+        // unlockFocus path is NOT main-thread-safe — the gallery's loadMedia
+        // task runs at a background priority, and calling lockFocus from
+        // off-main produces a blank or nil image silently. Same root cause
+        // as the ThumbnailCache.createThumbnail bug fixed in v2.4.1.
+        let pixelWidth = Int(image.size.width * scaleFactor)
+        let pixelHeight = Int(image.size.height * scaleFactor)
+        guard pixelWidth > 0, pixelHeight > 0 else { return image }
 
-        let newImage = NSImage(size: newSize)
-        newImage.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: newSize),
-                   from: NSRect(origin: .zero, size: image.size),
-                   operation: .copy,
-                   fraction: 1.0)
-        newImage.unlockFocus()
-        return newImage
+        // Get a CGImage from the NSImage. NSImage can be backed by multiple
+        // representations; bestRepresentation(for:context:hints:) picks the
+        // sharpest one for the target size. Falls back to cgImage(forProposedRect:)
+        // for representations that don't bridge cleanly.
+        let proposedSize = NSSize(width: pixelWidth, height: pixelHeight)
+        var proposedRect = NSRect(origin: .zero, size: proposedSize)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+            return image
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return image
+        }
+
+        context.interpolationQuality = .high
+        context.draw(cgImage,
+                     in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+        guard let scaledCG = context.makeImage() else { return image }
+        return NSImage(cgImage: scaledCG,
+                       size: NSSize(width: pixelWidth, height: pixelHeight))
         #endif
     }
 }
