@@ -156,6 +156,12 @@ public struct MediaGalleryView: View {
     /// Manual VR projection override — keyed by item index. Allows treating any video as VR.
     @State private var vrProjectionOverrides: [Int: VRProjection]
     @FocusState private var isFocused: Bool
+    #if os(macOS)
+    /// Local NSEvent keyDown monitor for arrow/space navigation. SwiftUI's
+    /// onKeyPress needs focus that sheets/windows don't reliably grant on
+    /// macOS, so the gallery listens at the event level while it's on screen.
+    @State private var keyMonitor: Any?
+    #endif
 
     /// Number of adjacent items to preload on each side
     private let preloadCount = 1
@@ -635,39 +641,43 @@ public struct MediaGalleryView: View {
     }
 
     #if os(macOS)
+    // The old implementation observed "mediaGallery*" NotificationCenter
+    // names, but nothing ever posted them — macOS keyboard navigation was
+    // dead. A local keyDown monitor works regardless of SwiftUI focus.
     private func setupKeyboardNotifications() {
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("mediaGalleryToggleSlideshow"),
-            object: nil,
-            queue: .main
-        ) { [self] _ in
-            toggleSlideshow()
-            resetControlsTimer()
-        }
-
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("mediaGalleryPreviousSlide"),
-            object: nil,
-            queue: .main
-        ) { [self] _ in
-            previousItem()
-            resetControlsTimer()
-        }
-
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("mediaGalleryNextSlide"),
-            object: nil,
-            queue: .main
-        ) { [self] _ in
-            nextItem()
-            resetControlsTimer()
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Leave modified keys (⌘/⌃/⌥ shortcuts) and text editing alone.
+            guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+                return event
+            }
+            if NSApp.keyWindow?.firstResponder is NSTextView {
+                return event
+            }
+            switch event.keyCode {
+            case 123: // left arrow
+                previousItem()
+                resetControlsTimer()
+                return nil
+            case 124: // right arrow
+                nextItem()
+                resetControlsTimer()
+                return nil
+            case 49: // space — play/pause the slideshow
+                toggleSlideshow()
+                resetControlsTimer()
+                return nil
+            default:
+                return event
+            }
         }
     }
 
     private func removeKeyboardNotifications() {
-        NotificationCenter.default.removeObserver(self, name: NSNotification.Name("mediaGalleryToggleSlideshow"), object: nil)
-        NotificationCenter.default.removeObserver(self, name: NSNotification.Name("mediaGalleryPreviousSlide"), object: nil)
-        NotificationCenter.default.removeObserver(self, name: NSNotification.Name("mediaGalleryNextSlide"), object: nil)
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
     }
     #endif
 
