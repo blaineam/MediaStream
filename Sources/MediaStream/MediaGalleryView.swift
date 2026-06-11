@@ -648,7 +648,7 @@ public struct MediaGalleryView: View {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // Leave modified keys (⌘/⌃/⌥ shortcuts) and text editing alone.
-            guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+            guard event.modifierFlags.isDisjoint(with: [.command, .control, .option]) else {
                 return event
             }
             if NSApp.keyWindow?.firstResponder is NSTextView {
