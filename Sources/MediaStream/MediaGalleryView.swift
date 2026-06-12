@@ -107,32 +107,53 @@ public struct MediaGalleryView: View {
     @State private var isSlideshowPlaying = false
     @State private var isZoomed = false
 
+    /// Clamp an index to the valid range for `count` items. Returns 0 for an
+    /// empty collection so the result is never negative (count - 1 would be -1).
+    static func clampedIndex(_ index: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return min(max(0, index), count - 1)
+    }
+
+    /// `currentIndex` clamped to the current `mediaItems` range. The caller can
+    /// pass a shorter array on a later update (item deleted) while @State still
+    /// holds the old index, so subscripts must use this instead of `currentIndex`.
+    /// Only valid for subscripting when `mediaItems` is non-empty.
+    private var safeIndex: Int {
+        Self.clampedIndex(currentIndex, count: mediaItems.count)
+    }
+
+    /// The currently displayed item, or nil when the gallery is empty.
+    private var currentItem: (any MediaItem)? {
+        mediaItems.isEmpty ? nil : mediaItems[safeIndex]
+    }
+
     /// Whether the current item is using a VR sphere projection (disables swipe navigation so drag controls the VR camera).
     /// Flat crop projections (SBS/TB/HSBS/HTB) are NOT sphere-based — swipe navigation stays enabled.
     private var isCurrentItemVRSphere: Bool {
-        guard currentIndex >= 0 && currentIndex < mediaItems.count else { return false }
-        let proj = effectiveVRProjection(for: currentIndex)
+        guard !mediaItems.isEmpty else { return false }
+        let proj = effectiveVRProjection(for: safeIndex)
         return proj?.requiresSphere == true
     }
 
     /// Whether ANY VR projection is active (sphere or flat crop). Used for 3D/2D button state.
     private var isCurrentItemVRActive: Bool {
-        guard currentIndex >= 0 && currentIndex < mediaItems.count else { return false }
-        let proj = effectiveVRProjection(for: currentIndex)
+        guard !mediaItems.isEmpty else { return false }
+        let proj = effectiveVRProjection(for: safeIndex)
         return proj != nil
     }
 
     /// Whether the current item is in 2D flat crop mode (non-sphere, non-nil, non-.flat).
     /// .flat means "off" for auto-detected VR items, flat crop means showing single eye.
     private var isCurrentItem2DMode: Bool {
-        guard currentIndex >= 0 && currentIndex < mediaItems.count else { return false }
-        guard let proj = effectiveVRProjection(for: currentIndex) else { return false }
+        guard !mediaItems.isEmpty else { return false }
+        guard let proj = effectiveVRProjection(for: safeIndex) else { return false }
         return !proj.requiresSphere && proj != .flat
     }
 
     /// The effective VR projection for the current item (auto-detected or manual override)
     private func effectiveVRProjection(for index: Int) -> VRProjection? {
-        vrProjectionOverrides[index] ?? mediaItems[index].vrProjection
+        guard mediaItems.indices.contains(index) else { return nil }
+        return vrProjectionOverrides[index] ?? mediaItems[index].vrProjection
     }
     @State private var wasPlayingBeforeZoom = false
     @State private var slideshowTimer: Timer?
@@ -173,21 +194,22 @@ public struct MediaGalleryView: View {
 
         var indices: [Int] = []
         let count = mediaItems.count
+        let current = safeIndex
 
         // Add previous items (with wrapping)
         for offset in (1...preloadCount).reversed() {
-            let idx = (currentIndex - offset + count) % count
+            let idx = (current - offset + count) % count
             if !indices.contains(idx) {
                 indices.append(idx)
             }
         }
 
         // Add current
-        indices.append(currentIndex)
+        indices.append(current)
 
         // Add next items (with wrapping)
         for offset in 1...preloadCount {
-            let idx = (currentIndex + offset) % count
+            let idx = (current + offset) % count
             if !indices.contains(idx) {
                 indices.append(idx)
             }
@@ -205,12 +227,12 @@ public struct MediaGalleryView: View {
         onIndexChange: ((Int) -> Void)? = nil
     ) {
         self.mediaItems = mediaItems
-        self.initialIndex = min(max(0, initialIndex), mediaItems.count - 1)
+        self.initialIndex = Self.clampedIndex(initialIndex, count: mediaItems.count)
         self.configuration = configuration
         self.onDismiss = onDismiss
         self.onBackToGrid = onBackToGrid
         self.onIndexChange = onIndexChange
-        _currentIndex = State(initialValue: min(max(0, initialIndex), mediaItems.count - 1))
+        _currentIndex = State(initialValue: Self.clampedIndex(initialIndex, count: mediaItems.count))
         _vrProjectionOverrides = State(initialValue: configuration.initialVRProjectionOverrides)
     }
 
@@ -231,8 +253,8 @@ public struct MediaGalleryView: View {
                         },
                         isSlideshowPlaying: isSlideshowPlaying,
                         showControls: showControls,
-                        isCurrentSlide: currentIndex == index,
-                        videoLoopCount: currentIndex == index ? videoLoopCount : 0,
+                        isCurrentSlide: safeIndex == index,
+                        videoLoopCount: safeIndex == index ? videoLoopCount : 0,
                         onVideoComplete: {
                             handleVideoComplete()
                         },
@@ -268,9 +290,9 @@ public struct MediaGalleryView: View {
                             }
                         }
                     )
-                    .opacity(currentIndex == index ? 1 : 0)
-                    .zIndex(currentIndex == index ? 1 : 0)
-                    .allowsHitTesting(currentIndex == index)
+                    .opacity(safeIndex == index ? 1 : 0)
+                    .zIndex(safeIndex == index ? 1 : 0)
+                    .allowsHitTesting(safeIndex == index)
                     #if !os(tvOS)
                     .simultaneousGesture(
                         // Navigation gesture - only activates for large horizontal swipes when not zoomed
@@ -299,6 +321,14 @@ public struct MediaGalleryView: View {
             .ignoresSafeArea()
             .onChange(of: currentIndex) { _, newIndex in
                 handleIndexChanged(newIndex)
+            }
+            .onChange(of: mediaItems.count) { _, newCount in
+                // The caller can shrink the array (item deleted) while @State
+                // still holds an index past the new end — re-clamp it.
+                let clamped = Self.clampedIndex(currentIndex, count: newCount)
+                if clamped != currentIndex {
+                    currentIndex = clamped
+                }
             }
             .onChange(of: playbackService.currentIndex) { _, newServiceIndex in
                 // Sync local index when playback service changes (e.g., from lock screen controls)
@@ -334,13 +364,18 @@ public struct MediaGalleryView: View {
                 }
             }
 
+            // Empty state — nothing to render, just a way back out
+            if mediaItems.isEmpty {
+                emptyStateView
+            }
+
             // Controls on top so they receive taps
-            if configuration.showControls && showControls {
+            if configuration.showControls && showControls && !mediaItems.isEmpty {
                 VStack(spacing: 0) {
                     // Top: Slide counter and buttons
                     HStack {
                         // Slide counter on the left
-                        Text("\(currentIndex + 1) / \(mediaItems.count)")
+                        Text("\(safeIndex + 1) / \(mediaItems.count)")
                             .font(.caption)
                             .foregroundStyle(.primary)
                             .padding(.horizontal, 12)
@@ -353,13 +388,13 @@ public struct MediaGalleryView: View {
                         HStack(spacing: 12) {
                             // Download button for current item only (slideshow mode)
                             MediaDownloadButton(
-                                mediaItems: [mediaItems[currentIndex]],
+                                mediaItems: [mediaItems[safeIndex]],
                                 headerProvider: { url in await MediaStreamConfiguration.headersAsync(for: url) }
                             )
 
                             // Custom action buttons
                             ForEach(configuration.customActions) { customAction in
-                                MediaStreamGlassButton(action: { customAction.action(currentIndex); resetControlsTimer() }) {
+                                MediaStreamGlassButton(action: { customAction.action(safeIndex); resetControlsTimer() }) {
                                     Image(systemName: customAction.icon)
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(.primary)
@@ -368,35 +403,36 @@ public struct MediaGalleryView: View {
 
                             // VR mode toggle for video items
                             // Three states: 3D (sphere VR, lit) → 2D (flat crop, lit) → Off (gray)
-                            if mediaItems[currentIndex].type == .video {
+                            if mediaItems[safeIndex].type == .video {
                                 MediaStreamGlassButton(action: {
+                                    guard let item = currentItem else { return }
                                     if isCurrentItemVRSphere {
                                         // 3D sphere → 2D flat crop (SBS by default)
                                         let flatProj: VRProjection = {
                                             // If file was auto-detected as SBS/TB, use that flat equivalent
-                                            if let autoProj = mediaItems[currentIndex].vrProjection {
+                                            if let autoProj = item.vrProjection {
                                                 if autoProj.isSBS { return .sbs }
                                                 if autoProj.isTB { return .tb }
                                             }
                                             return .sbs
                                         }()
-                                        vrProjectionOverrides[currentIndex] = flatProj
-                                        configuration.onVRProjectionChange?(mediaItems[currentIndex], flatProj)
+                                        vrProjectionOverrides[safeIndex] = flatProj
+                                        configuration.onVRProjectionChange?(item, flatProj)
                                     } else if isCurrentItem2DMode {
                                         // 2D flat crop → Off
-                                        if mediaItems[currentIndex].vrProjection != nil {
+                                        if item.vrProjection != nil {
                                             // Auto-detected as VR — force off with .flat override
-                                            vrProjectionOverrides[currentIndex] = .flat
-                                            configuration.onVRProjectionChange?(mediaItems[currentIndex], .flat)
+                                            vrProjectionOverrides[safeIndex] = .flat
+                                            configuration.onVRProjectionChange?(item, .flat)
                                         } else {
                                             // Manually enabled — just clear the override
-                                            vrProjectionOverrides.removeValue(forKey: currentIndex)
-                                            configuration.onVRProjectionChange?(mediaItems[currentIndex], nil)
+                                            vrProjectionOverrides.removeValue(forKey: safeIndex)
+                                            configuration.onVRProjectionChange?(item, nil)
                                         }
                                     } else {
                                         // Off → 3D sphere (enable with default 360 projection)
-                                        vrProjectionOverrides[currentIndex] = .equirectangular360
-                                        configuration.onVRProjectionChange?(mediaItems[currentIndex], .equirectangular360)
+                                        vrProjectionOverrides[safeIndex] = .equirectangular360
+                                        configuration.onVRProjectionChange?(item, .equirectangular360)
                                     }
                                     resetControlsTimer()
                                 }) {
@@ -414,7 +450,7 @@ public struct MediaGalleryView: View {
                                 }
 
                                 // Long-press / secondary: projection picker for fine-grained control
-                                if isCurrentItemVRActive, let proj = effectiveVRProjection(for: currentIndex), !proj.requiresSphere, proj != .flat {
+                                if isCurrentItemVRActive, let proj = effectiveVRProjection(for: safeIndex), !proj.requiresSphere, proj != .flat {
                                     Button {
                                         showFlatProjectionPicker = true
                                         resetControlsTimer()
@@ -470,7 +506,7 @@ public struct MediaGalleryView: View {
 
                     // Controls at bottom with extra padding for video/audio controls
                     controlsView
-                        .padding(.bottom, (mediaItems[currentIndex].type == .video || mediaItems[currentIndex].type == .audio) ? 140 : 20)
+                        .padding(.bottom, (mediaItems[safeIndex].type == .video || mediaItems[safeIndex].type == .audio) ? 140 : 20)
                 }
                 .allowsHitTesting(true)
             }
@@ -551,7 +587,7 @@ public struct MediaGalleryView: View {
         #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.shouldPauseForBackgroundNotification)) { _ in
             // Only continue background playback for cached media when background audio is enabled
-            let currentItem = mediaItems[currentIndex]
+            guard let currentItem = currentItem else { return }
             guard !MediaDownloadManager.shared.isCached(mediaItem: currentItem) || !MediaStreamConfiguration.backgroundAudioEnabled else {
                 return // Don't stop slideshow for cached media with background audio enabled
             }
@@ -681,6 +717,32 @@ public struct MediaGalleryView: View {
     }
     #endif
 
+    /// Shown when `mediaItems` is empty — none of the gallery controls are safe
+    /// to build without at least one item, so just offer a way back out.
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+
+            Text("No Media")
+                .font(.headline)
+                .foregroundStyle(.primary)
+
+            MediaStreamGlassButton(action: {
+                if let onBackToGrid = onBackToGrid {
+                    onBackToGrid()
+                } else {
+                    onDismiss()
+                }
+            }) {
+                Image(systemName: onBackToGrid != nil ? "arrow.left" : "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+        }
+    }
+
     /// Projection picker overlay for flat crop VR modes (SBS/TB/HSBS/HTB).
     /// Mirrors VRVideoPlayerView's projectionPickerOverlay but works outside the sphere renderer.
     private var flatProjectionPickerOverlay: some View {
@@ -702,13 +764,14 @@ public struct MediaGalleryView: View {
                 ScrollView {
                     VStack(spacing: 2) {
                         ForEach(VRProjection.allCases, id: \.self) { proj in
-                            let currentProj = effectiveVRProjection(for: currentIndex) ?? .equirectangular360
+                            let currentProj = effectiveVRProjection(for: safeIndex) ?? .equirectangular360
                             Button {
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     showFlatProjectionPicker = false
                                 }
-                                vrProjectionOverrides[currentIndex] = proj
-                                configuration.onVRProjectionChange?(mediaItems[currentIndex], proj)
+                                guard let item = currentItem else { return }
+                                vrProjectionOverrides[safeIndex] = proj
+                                configuration.onVRProjectionChange?(item, proj)
                             } label: {
                                 HStack {
                                     Text(proj.displayName)
@@ -826,10 +889,11 @@ public struct MediaGalleryView: View {
 
             // PiP toggle button - only show for video when cached and background enabled
             #if canImport(UIKit) && !os(macOS)
-            let currentItem = mediaItems[currentIndex]
-            let showPiP = currentItem.type == .video
-                && MediaDownloadManager.shared.isCached(mediaItem: currentItem)
-                && MediaStreamConfiguration.backgroundAudioEnabled
+            let showPiP = currentItem.map { item in
+                item.type == .video
+                    && MediaDownloadManager.shared.isCached(mediaItem: item)
+                    && MediaStreamConfiguration.backgroundAudioEnabled
+            } ?? false
             if showPiP {
                 MediaStreamGlassButton(action: { playbackService.togglePiP(); resetControlsTimer() }) {
                     Image(systemName: playbackService.isPiPActive ? "pip.exit" : "pip.enter")
@@ -895,7 +959,10 @@ public struct MediaGalleryView: View {
     /// Setup the playback service for background audio/video playback
     /// Only includes cached items when background audio is enabled
     private func setupPlaybackService() {
-        let currentItem = mediaItems[currentIndex]
+        guard let currentItem = currentItem else {
+            playbackService.externalPlaybackMode = false
+            return
+        }
 
         // Only enable background playback for cached items when background audio is enabled
         // Background audio is disabled when encryptDownloads is true
@@ -1020,7 +1087,7 @@ public struct MediaGalleryView: View {
         resetControlsTimer()
 
         // Sync current index to the playback service (for background controls)
-        if playbackService.externalPlaybackMode {
+        if playbackService.externalPlaybackMode, mediaItems.indices.contains(newIndex) {
             // Find the index within the cached items playlist
             let cachedItems = mediaItems.filter { item in
                 (item.type == .video || item.type == .audio) &&
@@ -1041,7 +1108,12 @@ public struct MediaGalleryView: View {
 
     private func loadCaption() {
         // Capture values to avoid referencing self in detached task
-        let index = currentIndex
+        let index = safeIndex
+        guard mediaItems.indices.contains(index) else {
+            currentCaption = nil
+            showCaption = false
+            return
+        }
         let item = mediaItems[index]
         let itemId = item.id
 
@@ -1050,8 +1122,11 @@ public struct MediaGalleryView: View {
             let caption = await item.getCaption()
 
             await MainActor.run {
-                // Only update if we're still on the same item (user may have swiped)
-                guard self.currentIndex == index && self.mediaItems[self.currentIndex].id == itemId else {
+                // Only update if we're still on the same item (user may have swiped
+                // or the items array may have changed underneath us)
+                guard self.mediaItems.indices.contains(index),
+                      self.safeIndex == index,
+                      self.mediaItems[index].id == itemId else {
                     return
                 }
 
@@ -1068,7 +1143,7 @@ public struct MediaGalleryView: View {
     private func checkAndHandleVideo() {
         // Video/audio playback is handled by ZoomableMediaView
         // Just track slideshow state for videos and audio
-        let currentItem = mediaItems[currentIndex]
+        guard let currentItem = currentItem else { return }
         if currentItem.type == .video || currentItem.type == .audio {
             if isSlideshowPlaying {
                 videoSlideStartTime = Date()
@@ -1087,7 +1162,7 @@ public struct MediaGalleryView: View {
     }
 
     private func startSlideshow() {
-        guard !isZoomed else { return }
+        guard !isZoomed, let currentItem = currentItem else { return }
         isSlideshowPlaying = true
 
         // Disable idle timer to prevent device from sleeping during slideshow
@@ -1100,8 +1175,6 @@ public struct MediaGalleryView: View {
             showControls = false
         }
         cancelHideControls()
-
-        let currentItem = mediaItems[currentIndex]
 
         // For videos and audio, record start time for duration tracking
         if currentItem.type == .video || currentItem.type == .audio {
@@ -1136,7 +1209,7 @@ public struct MediaGalleryView: View {
     private func scheduleSlideshowTimer() async {
         slideshowTimer?.invalidate()
 
-        let currentItem = mediaItems[currentIndex]
+        guard let currentItem = currentItem else { return }
         let baseDuration = customSlideshowDuration ?? configuration.slideshowDuration
         var duration = baseDuration
 
@@ -1167,6 +1240,7 @@ public struct MediaGalleryView: View {
     }
 
     private func nextItem() {
+        guard !mediaItems.isEmpty else { return }
         let newIndex: Int
 
         if isShuffled {
@@ -1217,7 +1291,7 @@ public struct MediaGalleryView: View {
         // for images/animated images: just reschedule the timer to show again
         // for videos/audio: increment videoLoopCount to trigger replay
         if newIndex == currentIndex {
-            let item = mediaItems[currentIndex]
+            let item = mediaItems[safeIndex]
             if item.type == .video || item.type == .audio {
                 videoLoopCount += 1
             }
@@ -1241,6 +1315,7 @@ public struct MediaGalleryView: View {
     }
 
     private func nextItemAfterVideoCompletion() {
+        guard !mediaItems.isEmpty else { return }
         // Loop one mode: replay the same video/audio
         if loopMode == .one {
             videoLoopCount += 1
@@ -1309,6 +1384,7 @@ public struct MediaGalleryView: View {
     }
 
     private func previousItem() {
+        guard !mediaItems.isEmpty else { return }
         let newIndex: Int
 
         if isShuffled {
@@ -1360,7 +1436,7 @@ public struct MediaGalleryView: View {
 
     /// Helper to schedule timer based on current item type
     private func scheduleNextItemTimer() {
-        let item = mediaItems[currentIndex]
+        guard let item = currentItem else { return }
         // Schedule timer for images and animated images
         // Videos/audio handle their own completion via onVideoComplete
         if item.type == .image || item.type == .animatedImage {
@@ -1373,9 +1449,8 @@ public struct MediaGalleryView: View {
     }
 
     private func shareCurrentItem() {
+        guard let currentItem = currentItem else { return }
         Task {
-            let currentItem = mediaItems[currentIndex]
-
             // First try getShareableItem() which should return original format
             if let shareableItem = await currentItem.getShareableItem() {
                 // Check if it's already a file URL (original format preserved)

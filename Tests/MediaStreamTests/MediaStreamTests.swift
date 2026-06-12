@@ -557,22 +557,48 @@ struct MediaGalleryMultiSelectActionTests {
 struct IndexBoundsTests {
     @Test("Initial index is clamped to valid range")
     func initialIndexClamping() {
-        // Test that the clamping logic works correctly
-        let items: [any MediaItem] = [
-            ImageMediaItem { nil },
-            ImageMediaItem { nil },
-            ImageMediaItem { nil }
-        ]
+        let count = 3
 
-        // These tests verify the clamping formula: min(max(0, index), count - 1)
-        let clampedNegative = min(max(0, -5), items.count - 1)
-        #expect(clampedNegative == 0)
+        #expect(MediaGalleryView.clampedIndex(-5, count: count) == 0)
+        #expect(MediaGalleryView.clampedIndex(100, count: count) == 2)
+        #expect(MediaGalleryView.clampedIndex(1, count: count) == 1)
+        #expect(MediaGalleryView.clampedIndex(0, count: count) == 0)
+        #expect(MediaGalleryView.clampedIndex(2, count: count) == 2)
+    }
 
-        let clampedTooLarge = min(max(0, 100), items.count - 1)
-        #expect(clampedTooLarge == 2)
+    @Test("Clamped index is never negative for an empty collection")
+    func clampedIndexEmptyCollection() {
+        // Regression: min(max(0, index), count - 1) returned -1 for an empty
+        // array, which crashed mediaItems[currentIndex] subscripts in body
+        // (EXC_BREAKPOINT at MediaGalleryView slideshow controls).
+        #expect(MediaGalleryView.clampedIndex(0, count: 0) == 0)
+        #expect(MediaGalleryView.clampedIndex(-1, count: 0) == 0)
+        #expect(MediaGalleryView.clampedIndex(5, count: 0) == 0)
+    }
 
-        let clampedValid = min(max(0, 1), items.count - 1)
-        #expect(clampedValid == 1)
+    @Test("Clamped index handles a shrunken collection")
+    func clampedIndexShrunkenCollection() {
+        // A caller can pass a shorter array on a later update (item deleted)
+        // while @State still holds the old larger index.
+        #expect(MediaGalleryView.clampedIndex(5, count: 3) == 2)
+        #expect(MediaGalleryView.clampedIndex(3, count: 3) == 2)
+        #expect(MediaGalleryView.clampedIndex(2, count: 1) == 0)
+    }
+
+    @Test("MediaGalleryView initializes safely with an empty items array")
+    @MainActor
+    func galleryViewInitWithEmptyItems() {
+        // Must not trap; the view renders an empty state instead of controls.
+        _ = MediaGalleryView(
+            mediaItems: [],
+            initialIndex: 0,
+            onDismiss: {}
+        )
+        _ = MediaGalleryView(
+            mediaItems: [],
+            initialIndex: 7,
+            onDismiss: {}
+        )
     }
 }
 
