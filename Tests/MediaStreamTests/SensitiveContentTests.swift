@@ -159,6 +159,65 @@ final class SensitiveContentTests: XCTestCase {
         XCTAssertFalse(policy.isRevealed("a"))
         XCTAssertFalse(policy.isRevealed("b"))
     }
+
+    // MARK: Policy wiring → decide() (the build-861/565 root cause)
+    //
+    // The reported bug was an UNVERIFIED-but-VERIFIABLE adult getting
+    // `.sensitiveNoReveal` (a dead-end blur) instead of `.sensitiveVerifyAge`.
+    // The decision table is correct; the failure was that a host policy did NOT
+    // forward `canRequestVerificationFromShield` into decide(...). These assert
+    // the contract a host MUST honor: when the policy advertises the verify-age
+    // capability, a sensitive item produces the verify-age presentation; when it
+    // does not, it produces the no-reveal dead-end. (ES previously hard-wired
+    // the capability to false — this is what would have caught that.)
+
+    @MainActor
+    func testPolicyAdvertisingVerificationDrivesVerifyAgePresentation() {
+        // Undetermined-but-verifiable adult policy.
+        let policy = StubPolicy(canReveal: false, canRequestVerificationFromShield: true)
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive,
+            guardActive: policy.isGuardActive,
+            revealed: policy.isRevealed("k"),
+            canReveal: policy.canReveal,
+            canRequestVerification: policy.canRequestVerificationFromShield)
+        XCTAssertEqual(p, .sensitiveVerifyAge,
+                       "A policy that advertises verify-age must yield the verify-age button, never a dead-end")
+        XCTAssertTrue(p.showsVerifyAgeButton)
+        XCTAssertFalse(p.showsRevealButton)
+    }
+
+    @MainActor
+    func testPolicyWithoutVerificationDeadEndsAtNoReveal() {
+        // Minor / declined policy (no reveal, no verify) — the ONLY case that
+        // should ever reach the buttonless dead-end.
+        let policy = StubPolicy(canReveal: false, canRequestVerificationFromShield: false)
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive,
+            guardActive: policy.isGuardActive,
+            revealed: policy.isRevealed("k"),
+            canReveal: policy.canReveal,
+            canRequestVerification: policy.canRequestVerificationFromShield)
+        XCTAssertEqual(p, .sensitiveNoReveal)
+        XCTAssertFalse(p.showsVerifyAgeButton)
+        XCTAssertFalse(p.showsRevealButton)
+    }
+
+    @MainActor
+    func testPolicyVerificationAlsoDrivesFailClosedVerifyAge() {
+        // The verify-age affordance must also appear on the fail-closed
+        // (analysisFailed) path for an undetermined-but-verifiable adult, not
+        // just the clean .sensitive path.
+        let policy = StubPolicy(canReveal: false, canRequestVerificationFromShield: true)
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .analysisFailed,
+            guardActive: policy.isGuardActive,
+            revealed: policy.isRevealed("k"),
+            canReveal: policy.canReveal,
+            canRequestVerification: policy.canRequestVerificationFromShield)
+        XCTAssertEqual(p, .errorVerifyAge)
+        XCTAssertTrue(p.showsVerifyAgeButton)
+    }
 }
 
 /// Minimal in-memory policy exercising the bulk-reveal contract shared by
@@ -173,7 +232,10 @@ private final class StubPolicy: SensitiveContentPolicy {
     private var revealedKeys: Set<String> = []
     private var revealedAll = false
 
-    init(canReveal: Bool) { self.canReveal = canReveal }
+    init(canReveal: Bool, canRequestVerificationFromShield: Bool = false) {
+        self.canReveal = canReveal
+        self.canRequestVerificationFromShield = canRequestVerificationFromShield
+    }
 
     func isRevealed(_ key: String) -> Bool { revealedAll || revealedKeys.contains(key) }
     func reveal(_ key: String) { guard canReveal else { return }; revealedKeys.insert(key) }

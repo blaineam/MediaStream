@@ -509,6 +509,14 @@ public struct SensitiveContentShieldModifier<P: SensitiveContentPolicy>: ViewMod
                 showVerificationFeedback = policy.verificationFeedbackMessage != nil
             } else {
                 policy.clearVerificationOutcome()
+                // A successful Declared Age Range verification flips the whole
+                // session's reveal capability on (the same effect Settings
+                // "Verify Age" has), so the just-verified adult sees the
+                // content WITHOUT a second "Reveal All"/"Show Anyway" tap. The
+                // verify-age affordance is only ever offered to an undetermined
+                // adult, and revealAll() is a structural no-op for anyone who
+                // isn't a verified adult — so this can't punch through policy.
+                policy.revealAll()
             }
         }
     }
@@ -712,6 +720,14 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
                 showVerificationFeedback = policy.verificationFeedbackMessage != nil
             } else {
                 policy.clearVerificationOutcome()
+                // A successful Declared Age Range verification flips the whole
+                // session's reveal capability on (the same effect Settings
+                // "Verify Age" has), so the just-verified adult sees the
+                // content WITHOUT a second "Reveal All"/"Show Anyway" tap. The
+                // verify-age affordance is only ever offered to an undetermined
+                // adult, and revealAll() is a structural no-op for anyone who
+                // isn't a verified adult — so this can't punch through policy.
+                policy.revealAll()
             }
         }
     }
