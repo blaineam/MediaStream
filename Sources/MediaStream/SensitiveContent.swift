@@ -396,6 +396,176 @@ public enum SensitiveBlurRenderer {
     }
 }
 
+// MARK: - Blur-OVERLAY controller + item seam (gallery, no baked bitmap)
+//
+// ARCHITECTURE: the gallery grid/slideshow must render the REAL image and lay
+// a SwiftUI blur OVERLAY on top while shielded — NOT bake a separate blurred
+// bitmap and NOT persist a sensitive thumbnail to disk. A verified adult's
+// reveal then simply removes the overlay and the real pixels are already on
+// screen (instant, no cache rebuild). Loading the real bytes into memory to
+// display-behind-blur is fine; the requirement is (a) no DISK persistence of
+// sensitive thumbnails and (b) instant overlay-based reveal.
+
+/// What the gallery should draw OVER a given item's real pixels.
+public enum SensitiveOverlayVerdict: Equatable, Sendable {
+    /// Show the real pixels, no overlay (safe / revealed / guard inactive).
+    case none
+    /// Lay a blur + "Sensitive Content" scrim over the real pixels.
+    case shielded(isError: Bool)
+
+    public var isShielded: Bool { self != .none }
+}
+
+/// Type-erased, observable bridge the host builds from its `SensitiveContentPolicy`
+/// so the MediaStream gallery can (1) decide whether to overlay-blur an item,
+/// (2) re-render the instant a reveal flips, and (3) decide whether an item's
+/// real thumbnail may be persisted to disk — WITHOUT the gallery depending on
+/// the host's concrete guard type or the generic policy protocol.
+///
+/// `@MainActor`/`ObservableObject` so the gallery cell `@ObservedObject`s it and
+/// the overlay disappears the moment `revealAll()`/`reveal(_:)` publishes.
+@MainActor
+public final class SensitiveOverlayController: ObservableObject {
+    /// Resolve the overlay verdict for an item's stable key. Returns `.none`
+    /// when the guard is inactive, the item is safe, or it has been revealed.
+    public let overlayVerdict: (String) -> SensitiveOverlayVerdict
+    /// True only when this item's REAL thumbnail is safe to persist to the disk
+    /// thumbnail cache (analyzed safe, or revealed). A sensitive/unanalyzed item
+    /// returns false → the gallery must NOT write its bitmap to disk.
+    public let diskPersistable: (String) -> Bool
+    /// Whether a reveal affordance should be offered for `key` right now.
+    public let canRevealKey: (String) -> Bool
+    /// Whether a "verify age" affordance should be offered for `key`.
+    public let canVerifyKey: (String) -> Bool
+    /// Per-item reveal ("Show Anyway"), verified-adult only.
+    public let revealKey: (String) -> Void
+    /// Bulk reveal — a verified adult unblocks the whole session at once.
+    public let revealAllAction: () -> Void
+    /// Launch the system age-range request; returns the new verified-adult flag.
+    public let requestVerification: () async -> Bool
+    /// True when the OS SCA policy is on AND no verified-adult bypass is active.
+    public let isActive: () -> Bool
+
+    /// A no-op controller (guard inactive) for hosts that don't gate the gallery.
+    public static let inactive = SensitiveOverlayController(
+        overlayVerdict: { _ in .none },
+        diskPersistable: { _ in true },
+        canRevealKey: { _ in false },
+        canVerifyKey: { _ in false },
+        revealKey: { _ in },
+        revealAllAction: {},
+        requestVerification: { false },
+        isActive: { false }
+    )
+
+    public init(
+        overlayVerdict: @escaping (String) -> SensitiveOverlayVerdict,
+        diskPersistable: @escaping (String) -> Bool,
+        canRevealKey: @escaping (String) -> Bool,
+        canVerifyKey: @escaping (String) -> Bool,
+        revealKey: @escaping (String) -> Void,
+        revealAllAction: @escaping () -> Void,
+        requestVerification: @escaping () async -> Bool,
+        isActive: @escaping () -> Bool
+    ) {
+        self.overlayVerdict = overlayVerdict
+        self.diskPersistable = diskPersistable
+        self.canRevealKey = canRevealKey
+        self.canVerifyKey = canVerifyKey
+        self.revealKey = revealKey
+        self.revealAllAction = revealAllAction
+        self.requestVerification = requestVerification
+        self.isActive = isActive
+    }
+
+    /// Re-publish so the gallery re-renders (host calls this after reveal/verify
+    /// flips its underlying policy state — e.g. inside its own `objectWillChange`
+    /// observation). Convenience for hosts whose policy publishes separately.
+    public func notifyChanged() { objectWillChange.send() }
+}
+
+/// A `MediaItem` that participates in the overlay-blur gallery. The gallery
+/// asks for the item's stable shield key; when non-nil it consults the injected
+/// `SensitiveOverlayController` to decide whether to overlay-blur the real
+/// pixels and whether the real thumbnail may be cached to disk.
+public protocol SensitiveOverlayItem {
+    /// Stable per-item key (same string the host's per-surface shields use), or
+    /// nil when this item is never gated.
+    var sensitiveOverlayKey: String? { get }
+}
+
+/// SwiftUI blur OVERLAY drawn over an already-rendered REAL image. Replaces the
+/// baked-bitmap approach: the underlying view shows the real pixels and this
+/// modifier lays a smooth `.blur` + opaque scrim + badge on top while shielded.
+/// Reveal simply removes the overlay → the real image is instantly visible.
+struct SensitiveBlurOverlayModifier: ViewModifier {
+    let verdict: SensitiveOverlayVerdict
+    var cornerRadius: CGFloat = 8
+    /// Blur radius for the on-screen overlay. Heavy enough that the real pixels
+    /// underneath are not readable.
+    var blurRadius: CGFloat = 28
+    var compact: Bool = false
+
+    func body(content: Content) -> some View {
+        content
+            // The REAL image stays in the hierarchy; we blur a COPY of it via an
+            // overlay so reveal (verdict → .none) instantly shows the sharp
+            // original without any reload. The overlay itself blurs the same
+            // content snapshot plus a scrim + badge.
+            .overlay {
+                if case let .shielded(isError) = verdict {
+                    ZStack {
+                        // Blur the real content underneath, then darken so the
+                        // pixels can't be read through the blur.
+                        content
+                            .blur(radius: blurRadius, opaque: true)
+                            .overlay(Color.black.opacity(0.18))
+                        badge(isError: isError)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: verdict)
+    }
+
+    @ViewBuilder
+    private func badge(isError: Bool) -> some View {
+        if compact {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "eye.slash.fill")
+                .font(.caption)
+                .foregroundStyle(.white)
+        } else {
+            VStack(spacing: 6) {
+                Image(systemName: isError ? "exclamationmark.triangle.fill" : "eye.slash.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                Text(isError ? "Couldn't Check" : "Sensitive")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+            }
+            .shadow(radius: 2)
+        }
+    }
+}
+
+extension View {
+    /// Lay a blur OVERLAY over this REAL media view while `verdict` is shielded.
+    /// No baked bitmap, no cache dependency — reveal flips `verdict` to `.none`
+    /// and the underlying sharp image is already on screen.
+    func sensitiveBlurOverlay(
+        _ verdict: SensitiveOverlayVerdict,
+        cornerRadius: CGFloat = 8,
+        blurRadius: CGFloat = 28,
+        compact: Bool = false
+    ) -> some View {
+        modifier(SensitiveBlurOverlayModifier(verdict: verdict,
+                                              cornerRadius: cornerRadius,
+                                              blurRadius: blurRadius,
+                                              compact: compact))
+    }
+}
+
 // MARK: - Per-item shield (SwiftUI)
 
 extension View {
@@ -555,12 +725,14 @@ extension View {
     public func sensitiveSurfaceBlock<P: SensitiveContentPolicy>(
         blockKey: String,
         policy: P,
-        flaggedSensitive: Bool
+        flaggedSensitive: Bool,
+        copy: SensitiveBlockCopy = .generic
     ) -> some View {
         modifier(SensitiveSurfaceBlockModifier(blockKey: blockKey,
                                                policy: policy,
                                                flaggedSensitive: flaggedSensitive,
-                                               topInteractivePassthrough: 0))
+                                               topInteractivePassthrough: 0,
+                                               copy: copy))
     }
 
     /// Same FULL-BLEED block, but the top `topInteractivePassthrough` points
@@ -580,13 +752,47 @@ extension View {
         blockKey: String,
         policy: P,
         flaggedSensitive: Bool,
-        topInteractivePassthrough: CGFloat
+        topInteractivePassthrough: CGFloat,
+        copy: SensitiveBlockCopy = .generic
     ) -> some View {
         modifier(SensitiveSurfaceBlockModifier(blockKey: blockKey,
                                                policy: policy,
                                                flaggedSensitive: flaggedSensitive,
-                                               topInteractivePassthrough: topInteractivePassthrough))
+                                               topInteractivePassthrough: topInteractivePassthrough,
+                                               copy: copy))
     }
+}
+
+/// Host-configurable copy for the full-screen sensitive-content block. The
+/// DEFAULTS are GENERIC because MediaStream is embedded in non-conversation
+/// hosts (Enter Space is a FILE BROWSER, not a chat). A host that IS a
+/// conversation (Ari) may pass conversation-specific strings; everyone else
+/// gets neutral "content" copy with no "conversation" wording.
+public struct SensitiveBlockCopy: Equatable, Sendable {
+    /// Heading shown on the block (default "Sensitive Content").
+    public var title: String
+    /// Body shown when a verified adult can reveal the surface.
+    public var revealMessage: String
+    /// Body shown when the undetermined viewer can verify age to reveal.
+    public var verifyMessage: String
+    /// Body shown when the surface can't be revealed on this account.
+    public var lockedMessage: String
+
+    public init(
+        title: String = "Sensitive Content",
+        revealMessage: String = "This content contains sensitive media. Tap Reveal to view it.",
+        verifyMessage: String = "Blurred: sensitive content. Verify your age in Settings to reveal it.",
+        lockedMessage: String = "This content contains sensitive media and can't be revealed on this account."
+    ) {
+        self.title = title
+        self.revealMessage = revealMessage
+        self.verifyMessage = verifyMessage
+        self.lockedMessage = lockedMessage
+    }
+
+    /// GENERIC default copy — no "conversation" wording. Used by every host
+    /// that doesn't pass its own (Enter Space file browser, galleries, …).
+    public static let generic = SensitiveBlockCopy()
 }
 
 public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModifier {
@@ -596,6 +802,10 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
     /// When > 0, the top this-many points of the cover draw the blur but pass
     /// touches THROUGH to the host's custom header buttons beneath this overlay.
     var topInteractivePassthrough: CGFloat = 0
+    /// Host-configurable, GENERIC-by-default copy (title + body strings). The
+    /// shared component never says "conversation" unless the host passes copy
+    /// that does (only Ari does).
+    var copy: SensitiveBlockCopy = .generic
 
     @State private var isRequestingVerification = false
     @State private var showVerificationFeedback = false
@@ -665,7 +875,7 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
                 Image(systemName: "eye.slash.fill")
                     .font(.largeTitle)
                     .foregroundColor(.secondary)
-                Text("Sensitive Content")
+                Text(copy.title)
                     .font(.headline)
                 Text(explanation(for: presentation))
                     .font(.subheadline)
@@ -714,12 +924,12 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
 
     private func explanation(for presentation: SensitiveShieldPresentation) -> String {
         if presentation.showsRevealButton {
-            return "This conversation contains sensitive content. Tap Reveal to view it."
+            return copy.revealMessage
         }
         if presentation.showsVerifyAgeButton {
-            return "Blurred: sensitive content. Verify your age in Settings to reveal it."
+            return copy.verifyMessage
         }
-        return "This conversation contains sensitive content and can't be revealed on this account."
+        return copy.lockedMessage
     }
 
     private func requestVerification() {

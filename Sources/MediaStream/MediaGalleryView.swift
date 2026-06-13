@@ -71,6 +71,13 @@ public struct MediaGalleryConfiguration {
     public var onVRProjectionChange: ((any MediaItem, VRProjection?) -> Void)?
     /// Initial VR projection overrides keyed by media item index, loaded from persistent storage.
     public var initialVRProjectionOverrides: [Int: VRProjection]
+    /// Optional sensitive-content overlay controller. When set, the gallery
+    /// grid/slideshow render the REAL image and lay a SwiftUI blur OVERLAY on
+    /// top for any `SensitiveOverlayItem` the controller flags — instead of the
+    /// host baking a blurred bitmap. A verified adult's reveal removes the
+    /// overlay and the sharp image is already on screen (no cache rebuild).
+    /// Sensitive items are never persisted to the disk thumbnail cache.
+    public var sensitiveOverlay: SensitiveOverlayController?
 
     public init(
         slideshowDuration: TimeInterval = 5.0,
@@ -78,7 +85,8 @@ public struct MediaGalleryConfiguration {
         backgroundColor: Color = .black,
         customActions: [MediaGalleryAction] = [],
         onVRProjectionChange: ((any MediaItem, VRProjection?) -> Void)? = nil,
-        initialVRProjectionOverrides: [Int: VRProjection] = [:]
+        initialVRProjectionOverrides: [Int: VRProjection] = [:],
+        sensitiveOverlay: SensitiveOverlayController? = nil
     ) {
         self.slideshowDuration = slideshowDuration
         self.showControls = showControls
@@ -86,6 +94,7 @@ public struct MediaGalleryConfiguration {
         self.customActions = customActions
         self.onVRProjectionChange = onVRProjectionChange
         self.initialVRProjectionOverrides = initialVRProjectionOverrides
+        self.sensitiveOverlay = sensitiveOverlay
     }
 }
 
@@ -290,6 +299,14 @@ public struct MediaGalleryView: View {
                             }
                         }
                     )
+                    // OVERLAY-not-baked (slideshow): the full-screen viewer shows
+                    // the REAL image and lays a blur OVERLAY on top while shielded;
+                    // a verified adult's reveal removes it instantly (the observed
+                    // controller publishes). Mirrors the grid cell.
+                    .modifier(SlideshowSensitiveOverlay(
+                        overlay: configuration.sensitiveOverlay,
+                        key: (item as? SensitiveOverlayItem)?.sensitiveOverlayKey
+                    ))
                     .opacity(safeIndex == index ? 1 : 0)
                     .zIndex(safeIndex == index ? 1 : 0)
                     .allowsHitTesting(safeIndex == index)
@@ -1576,6 +1593,33 @@ public struct MediaGalleryView: View {
             isFullscreen.toggle()
         }
         #endif
+    }
+}
+
+// MARK: - Slideshow sensitive blur overlay
+
+/// Observes the host's `SensitiveOverlayController` so the full-screen
+/// slideshow blur disappears the instant a verified adult reveals. Lays a
+/// SwiftUI blur OVERLAY over the REAL image (no baked bitmap). A nil controller
+/// or key is a structural no-op (passes the content through untouched).
+private struct SlideshowSensitiveOverlay: ViewModifier {
+    let overlay: SensitiveOverlayController?
+    let key: String?
+    @ObservedObject private var observed: SensitiveOverlayController
+
+    init(overlay: SensitiveOverlayController?, key: String?) {
+        self.overlay = overlay
+        self.key = key
+        self.observed = overlay ?? .inactive
+    }
+
+    private var verdict: SensitiveOverlayVerdict {
+        guard let overlay, let key else { return .none }
+        return overlay.overlayVerdict(key)
+    }
+
+    func body(content: Content) -> some View {
+        content.sensitiveBlurOverlay(verdict, cornerRadius: 0, blurRadius: 48)
     }
 }
 

@@ -218,6 +218,63 @@ final class SensitiveContentTests: XCTestCase {
         XCTAssertEqual(p, .errorVerifyAge)
         XCTAssertTrue(p.showsVerifyAgeButton)
     }
+
+    // MARK: Generic block copy (no "conversation")
+
+    func testGenericBlockCopyHasNoConversationWording() {
+        let copy = SensitiveBlockCopy.generic
+        XCTAssertEqual(copy.title, "Sensitive Content")
+        for text in [copy.title, copy.revealMessage, copy.verifyMessage, copy.lockedMessage] {
+            XCTAssertFalse(text.lowercased().contains("conversation"),
+                           "Generic copy must not say 'conversation': \(text)")
+        }
+    }
+
+    func testHostMayOverrideBlockCopy() {
+        let copy = SensitiveBlockCopy(title: "Hidden Chat",
+                                      revealMessage: "This conversation is sensitive.")
+        XCTAssertEqual(copy.title, "Hidden Chat")
+        XCTAssertTrue(copy.revealMessage.contains("conversation"))
+    }
+
+    // MARK: Overlay verdict + controller (no baked bitmap, no disk persistence)
+
+    func testOverlayVerdictShieldedFlag() {
+        XCTAssertFalse(SensitiveOverlayVerdict.none.isShielded)
+        XCTAssertTrue(SensitiveOverlayVerdict.shielded(isError: false).isShielded)
+        XCTAssertTrue(SensitiveOverlayVerdict.shielded(isError: true).isShielded)
+    }
+
+    @MainActor
+    func testInactiveOverlayControllerNeverShieldsAndAlwaysPersists() {
+        let c = SensitiveOverlayController.inactive
+        XCTAssertEqual(c.overlayVerdict("k"), .none)
+        // Guard inactive → the gallery shows raw pixels and caching is fine.
+        XCTAssertTrue(c.diskPersistable("k"))
+        XCTAssertFalse(c.isActive())
+    }
+
+    @MainActor
+    func testSensitiveItemIsNotDiskPersistableUntilRevealed() {
+        // Mirrors the host contract: a sensitive key is NOT disk-persistable
+        // (so a blurred/flagged thumbnail never reaches disk) until revealed.
+        var revealed: Set<String> = []
+        let c = SensitiveOverlayController(
+            overlayVerdict: { revealed.contains($0) ? .none : .shielded(isError: false) },
+            diskPersistable: { revealed.contains($0) },   // sensitive ⇒ false
+            canRevealKey: { _ in true },
+            canVerifyKey: { _ in false },
+            revealKey: { revealed.insert($0) },
+            revealAllAction: {},
+            requestVerification: { false },
+            isActive: { true }
+        )
+        XCTAssertEqual(c.overlayVerdict("img"), .shielded(isError: false))
+        XCTAssertFalse(c.diskPersistable("img"), "Sensitive thumbnail must NOT be disk-persistable")
+        c.revealKey("img")
+        XCTAssertEqual(c.overlayVerdict("img"), .none, "Reveal removes the overlay (instant, no rebuild)")
+        XCTAssertTrue(c.diskPersistable("img"), "Once revealed the real thumbnail may persist")
+    }
 }
 
 /// Minimal in-memory policy exercising the bulk-reveal contract shared by

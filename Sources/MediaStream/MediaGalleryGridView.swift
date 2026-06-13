@@ -523,6 +523,7 @@ public struct MediaGalleryGridView: View {
                     videoHasAudio: videoHasAudio[item.id],
                     isSelected: selectedItems.contains(item.id),
                     showSelection: isMultiSelectMode,
+                    sensitiveOverlay: configuration.sensitiveOverlay,
                     onVisible: { itemId in
                         handleItemVisible(itemId: itemId, index: index)
                     },
@@ -944,11 +945,54 @@ struct LazyThumbnailView: View {
     var videoHasAudio: Bool? = nil
     var isSelected: Bool = false
     var showSelection: Bool = false
+    /// Sensitive-content overlay controller. Non-nil when the host wants the
+    /// gallery to render the REAL image and lay a SwiftUI blur OVERLAY on top
+    /// for flagged items (no baked bitmap, no sensitive thumbnail on disk).
+    var sensitiveOverlay: SensitiveOverlayController? = nil
     var onVisible: ((UUID) -> Void)? = nil
     var onHidden: ((UUID) -> Void)? = nil
     /// Called after thumbnail loads if the item's MediaType changed (e.g., webp/heic
     /// resolved from .image → .animatedImage). Use to trigger grid re-filter.
     var onTypeResolved: ((UUID) -> Void)? = nil
+
+    /// Observe the overlay controller so the blur disappears the instant a
+    /// verified adult reveals (the controller publishes on reveal/revealAll).
+    @ObservedObject private var observedOverlay: SensitiveOverlayController
+
+    init(
+        mediaItem: any MediaItem,
+        videoDuration: TimeInterval?,
+        videoHasAudio: Bool? = nil,
+        isSelected: Bool = false,
+        showSelection: Bool = false,
+        sensitiveOverlay: SensitiveOverlayController? = nil,
+        onVisible: ((UUID) -> Void)? = nil,
+        onHidden: ((UUID) -> Void)? = nil,
+        onTypeResolved: ((UUID) -> Void)? = nil
+    ) {
+        self.mediaItem = mediaItem
+        self.videoDuration = videoDuration
+        self.videoHasAudio = videoHasAudio
+        self.isSelected = isSelected
+        self.showSelection = showSelection
+        self.sensitiveOverlay = sensitiveOverlay
+        self.onVisible = onVisible
+        self.onHidden = onHidden
+        self.onTypeResolved = onTypeResolved
+        self.observedOverlay = sensitiveOverlay ?? .inactive
+    }
+
+    /// Stable sensitive key for this item, or nil when it is never gated.
+    private var sensitiveKey: String? {
+        (mediaItem as? SensitiveOverlayItem)?.sensitiveOverlayKey
+    }
+
+    /// The overlay to draw over the REAL pixels right now (recomputed live as
+    /// the observed controller publishes reveal changes).
+    private var overlayVerdict: SensitiveOverlayVerdict {
+        guard let key = sensitiveKey, let overlay = sensitiveOverlay else { return .none }
+        return overlay.overlayVerdict(key)
+    }
 
     @State private var thumbnail: PlatformImage?
     @State private var isPlaceholder = false
@@ -995,6 +1039,12 @@ struct LazyThumbnailView: View {
                 .frame(width: geometry.size.width, height: geometry.size.width)
                 .clipped()
                 .cornerRadius(8)
+                // OVERLAY-not-baked: lay a SwiftUI blur over the REAL pixels
+                // while shielded. Reveal flips the verdict to .none (controller
+                // publishes) and the sharp image is already on screen — no
+                // rebuild, no cache dependency.
+                .sensitiveBlurOverlay(overlayVerdict, cornerRadius: 8,
+                                      compact: geometry.size.width < 120)
                 .overlay(
                     Group {
                         if showSelection {
@@ -1092,7 +1142,17 @@ struct LazyThumbnailView: View {
     private func loadThumbnailIfNeeded() {
         // Skip disk cache for animated images to preserve animation data
         let isAnimated = mediaItem.type == .animatedImage
-        let diskCacheKey = isAnimated ? nil : mediaItem.diskCacheKey
+        // SENSITIVE NO-DISK GUARANTEE: when the overlay controller marks this
+        // item NOT disk-persistable (sensitive / unanalyzed / failed), force the
+        // disk key to nil so a thumbnail of flagged content is NEVER written to
+        // the disk cache — only the in-memory, on-screen blurred-overlay
+        // presentation exists. Enforced at the MediaStream layer regardless of
+        // what the host's MediaItem.diskCacheKey returns.
+        let sensitivePersistable: Bool = {
+            guard let key = sensitiveKey, let overlay = sensitiveOverlay else { return true }
+            return overlay.diskPersistable(key)
+        }()
+        let diskCacheKey = (isAnimated || !sensitivePersistable) ? nil : mediaItem.diskCacheKey
 
         // Check memory cache first, then disk cache (skip disk for animated)
         if let cached = ThumbnailCache.shared.get(mediaItem.id, diskCacheKey: diskCacheKey) {
