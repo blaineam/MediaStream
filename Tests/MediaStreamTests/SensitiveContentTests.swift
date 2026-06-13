@@ -1,0 +1,186 @@
+//
+//  SensitiveContentTests.swift
+//  MediaStreamTests
+//
+//  Unit tests for the UNIFIED sensitive-content decision logic shared by
+//  Enter Space and Ari: per-item reveal policy, the verify-age seam, the
+//  fail-closed error matrix, and the gallery / conversation bulk-block
+//  threshold. These exercise the pure decision tables only (no SwiftUI, no
+//  system SCA / Declared Age Range).
+//
+
+import XCTest
+@testable import MediaStream
+
+final class SensitiveContentTests: XCTestCase {
+
+    // MARK: decide(...) — per-item reveal matrix
+
+    func testInactiveGuardNeverShields() {
+        for verdict: SensitiveContentVerdict in [.safe, .sensitive, .analysisFailed] {
+            let p = SensitiveShieldPresentation.decide(
+                verdict: verdict, guardActive: false, revealed: false,
+                canReveal: true, canRequestVerification: true)
+            XCTAssertEqual(p, .none, "Guard inactive must never shield (\(verdict))")
+            XCTAssertFalse(p.isShielded)
+        }
+    }
+
+    func testSafeNeverShields() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .safe, guardActive: true, revealed: false, canReveal: false)
+        XCTAssertEqual(p, .none)
+    }
+
+    func testPendingVerdictNeverShields() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: nil, guardActive: true, revealed: false, canReveal: true)
+        XCTAssertEqual(p, .none)
+    }
+
+    func testMinorGetsBlurNoReveal() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive, guardActive: true, revealed: false,
+            canReveal: false, canRequestVerification: false)
+        XCTAssertEqual(p, .sensitiveNoReveal)
+        XCTAssertFalse(p.showsRevealButton)
+        XCTAssertFalse(p.showsVerifyAgeButton)
+        XCTAssertTrue(p.isShielded)
+    }
+
+    func testMinorRevealStateCannotPunchThrough() {
+        // Even if a stray reveal flag is set, a non-adult must stay shielded.
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive, guardActive: true, revealed: true,
+            canReveal: false, canRequestVerification: false)
+        XCTAssertEqual(p, .sensitiveNoReveal)
+    }
+
+    func testVerifiedAdultGetsShowAnyway() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive, guardActive: true, revealed: false, canReveal: true)
+        XCTAssertEqual(p, .sensitiveWithReveal)
+        XCTAssertTrue(p.showsRevealButton)
+    }
+
+    func testVerifiedAdultRevealedShowsContent() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive, guardActive: true, revealed: true, canReveal: true)
+        XCTAssertEqual(p, .none)
+    }
+
+    func testUndeterminedGetsVerifyAge() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .sensitive, guardActive: true, revealed: false,
+            canReveal: false, canRequestVerification: true)
+        XCTAssertEqual(p, .sensitiveVerifyAge)
+        XCTAssertTrue(p.showsVerifyAgeButton)
+        XCTAssertFalse(p.showsRevealButton)
+    }
+
+    // MARK: Fail-closed error matrix
+
+    func testAnalysisFailedMinorFailsClosed() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .analysisFailed, guardActive: true, revealed: false,
+            canReveal: false, canRequestVerification: false)
+        XCTAssertEqual(p, .errorNoReveal)
+        XCTAssertTrue(p.isErrorState)
+        XCTAssertTrue(p.isShielded)
+    }
+
+    func testAnalysisFailedAdultGetsManualReveal() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .analysisFailed, guardActive: true, revealed: false, canReveal: true)
+        XCTAssertEqual(p, .errorWithReveal)
+        XCTAssertTrue(p.showsRevealButton)
+        XCTAssertTrue(p.isErrorState)
+    }
+
+    func testAnalysisFailedUndeterminedGetsVerifyAge() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .analysisFailed, guardActive: true, revealed: false,
+            canReveal: false, canRequestVerification: true)
+        XCTAssertEqual(p, .errorVerifyAge)
+        XCTAssertTrue(p.showsVerifyAgeButton)
+        XCTAssertTrue(p.isErrorState)
+    }
+
+    func testAnalysisFailedAdultRevealedShowsContent() {
+        let p = SensitiveShieldPresentation.decide(
+            verdict: .analysisFailed, guardActive: true, revealed: true, canReveal: true)
+        XCTAssertEqual(p, .none)
+    }
+
+    // MARK: Bulk-block threshold
+
+    func testBulkBlockEmptyOrNoneSensitive() {
+        XCTAssertFalse(SensitiveBulkPolicy.shouldBulkBlock(sensitiveCount: 0, totalCount: 0))
+        XCTAssertFalse(SensitiveBulkPolicy.shouldBulkBlock(sensitiveCount: 0, totalCount: 20))
+    }
+
+    func testBulkBlockHitsAbsoluteCount() {
+        // 3 sensitive items trips the count threshold regardless of fraction.
+        XCTAssertTrue(SensitiveBulkPolicy.shouldBulkBlock(sensitiveCount: 3, totalCount: 100))
+    }
+
+    func testBulkBlockHitsFraction() {
+        // 1 of 4 = 25% trips the fraction threshold.
+        XCTAssertTrue(SensitiveBulkPolicy.shouldBulkBlock(sensitiveCount: 1, totalCount: 4))
+        // 2 of 9 ≈ 22% does NOT (and is below the count threshold).
+        XCTAssertFalse(SensitiveBulkPolicy.shouldBulkBlock(sensitiveCount: 2, totalCount: 9))
+    }
+
+    func testBulkBlockSingleSensitiveLargeGalleryDoesNotBulk() {
+        // 1 sensitive of 50 should remain per-item, not bulk-block.
+        XCTAssertFalse(SensitiveBulkPolicy.shouldBulkBlock(sensitiveCount: 1, totalCount: 50))
+    }
+
+    // MARK: Bulk reveal cascade (verified adult unblocks → every key reveals)
+
+    @MainActor
+    func testBulkRevealRevealsEveryKeyForVerifiedAdult() {
+        let policy = StubPolicy(canReveal: true)
+        XCTAssertFalse(policy.isRevealed("a"))
+        XCTAssertFalse(policy.isRevealed("b"))
+        policy.revealAll()
+        // A single bulk reveal must un-blur EVERY per-item key (the reported
+        // "did not unblur all" bug), not just the block key.
+        XCTAssertTrue(policy.isRevealed("a"))
+        XCTAssertTrue(policy.isRevealed("b"))
+        XCTAssertTrue(policy.isRevealed("conversation:42"))
+    }
+
+    @MainActor
+    func testBulkRevealIsNoOpForNonAdult() {
+        let policy = StubPolicy(canReveal: false)
+        policy.revealAll()
+        // A minor / undetermined user can never bulk-reveal.
+        XCTAssertFalse(policy.isRevealed("a"))
+        XCTAssertFalse(policy.isRevealed("b"))
+    }
+}
+
+/// Minimal in-memory policy exercising the bulk-reveal contract shared by
+/// Enter Space and Ari (revealAll → every key reveals, adult-gated).
+@MainActor
+private final class StubPolicy: SensitiveContentPolicy {
+    let canReveal: Bool
+    var isGuardActive = true
+    var canRequestVerificationFromShield = false
+    var verificationFeedbackMessage: String?
+
+    private var revealedKeys: Set<String> = []
+    private var revealedAll = false
+
+    init(canReveal: Bool) { self.canReveal = canReveal }
+
+    func isRevealed(_ key: String) -> Bool { revealedAll || revealedKeys.contains(key) }
+    func reveal(_ key: String) { guard canReveal else { return }; revealedKeys.insert(key) }
+    func revealAll() { guard canReveal else { return }; revealedAll = true }
+    func verdict(forKey key: String,
+                 dataProvider: @escaping @Sendable () async -> Data?) async -> SensitiveContentVerdict { .safe }
+    func requestAdultVerification() async -> Bool { canReveal }
+    func clearVerificationOutcome() {}
+    func anySensitive(in keys: [String]) -> Bool { false }
+}
