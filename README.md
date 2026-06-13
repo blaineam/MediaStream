@@ -151,9 +151,11 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/blaineam/MediaStream.git", from: "1.9.0")
+    .package(url: "https://github.com/blaineam/MediaStream.git", from: "2.5.0")
 ]
 ```
+
+> **Note:** Pin a tagged release (e.g. `2.5.0`) rather than `branch: "main"` so clean checkouts and CI resolve a reproducible version. See [CHANGELOG.md](CHANGELOG.md) for what each release contains.
 
 ## 🚀 Quick Start
 
