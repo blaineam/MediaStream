@@ -434,6 +434,18 @@ public struct MediaGalleryGridView: View {
             applyFilters()
             onFilterChange?(newFilter)
         }
+        // GALLERY-UNBLUR FIX: when the HOST replaces the item list — e.g. a
+        // verified adult reveals a shielded item and the host rebuilds every
+        // item with a FRESH identity so the per-item thumbnail cache misses and
+        // re-pulls the now-unblurred pixels — `filteredItems` (the @State this
+        // grid actually renders) must be recomputed. Without this, the grid
+        // keeps showing the OLD items (old UUIDs → cached blur) and the reveal
+        // never takes visible effect. Keyed on the id list so a pure reorder/
+        // swap is detected without comparing the existentials themselves.
+        .onChange(of: mediaItems.map(\.id)) { _, _ in
+            checkMediaTypes()
+            applyFilters()
+        }
         .onDisappear {
             // Clear visible items tracking when view disappears
             visibleItemIds.removeAll()
