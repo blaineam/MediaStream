@@ -466,6 +466,15 @@ extension MediaItem {
 public typealias PlatformImage = UIImage
 #elseif canImport(AppKit)
 public typealias PlatformImage = NSImage
+
+// `NSImage` is an immutable-by-convention reference type in the way MediaStream
+// uses it (decoded once, only read afterwards) but AppKit does not declare it
+// `Sendable`. Without this, every `PlatformImage?` that crosses an isolation
+// boundary — `NowPlayingInfo.artwork`, `loadImage()`/`generateThumbnail(...)`
+// results — warns "non-sendable ...; this is an error in the Swift 6 language
+// mode". UIKit's `UIImage` is already `Sendable`, so this retroactive
+// conformance is scoped to AppKit only to avoid a redundant-conformance error.
+extension NSImage: @retroactive @unchecked Sendable {}
 #endif
 
 /// Default implementation for image-based media items

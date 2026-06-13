@@ -240,8 +240,13 @@ private final class StubPolicy: SensitiveContentPolicy {
     func isRevealed(_ key: String) -> Bool { revealedAll || revealedKeys.contains(key) }
     func reveal(_ key: String) { guard canReveal else { return }; revealedKeys.insert(key) }
     func revealAll() { guard canReveal else { return }; revealedAll = true }
+    #if compiler(>=6.3)
+    func verdict(forKey key: String,
+                 dataProvider: @escaping @concurrent @Sendable () async -> Data?) async -> SensitiveContentVerdict { .safe }
+    #else
     func verdict(forKey key: String,
                  dataProvider: @escaping @Sendable () async -> Data?) async -> SensitiveContentVerdict { .safe }
+    #endif
     func requestAdultVerification() async -> Bool { canReveal }
     func clearVerificationOutcome() {}
     func anySensitive(in keys: [String]) -> Bool { false }

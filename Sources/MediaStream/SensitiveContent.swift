@@ -170,8 +170,20 @@ public protocol SensitiveContentPolicy: ObservableObject {
     /// (Enter Space's app target has it on, its file-provider targets do not —
     /// without the explicit annotation the inferred isolation diverges and the
     /// shared conformance fails to type-check).
+    #if compiler(>=6.3)
+    // Swift 6.3+ (Xcode 26): `@concurrent` and `@Sendable` are DISTINCT
+    // attributes. The explicit `@concurrent` keeps the closure's isolation
+    // identical across consuming targets regardless of
+    // `NonisolatedNonsendingByDefault` (see note above).
     func verdict(forKey key: String,
                  dataProvider: @escaping @concurrent @Sendable () async -> Data?) async -> SensitiveContentVerdict
+    #else
+    // Swift < 6.3 (e.g. Xcode 16 CI runner): `@concurrent` was the old spelling
+    // of `@Sendable`, so writing both is a "duplicate attribute" error. On these
+    // toolchains `@Sendable` alone has the same effect.
+    func verdict(forKey key: String,
+                 dataProvider: @escaping @Sendable () async -> Data?) async -> SensitiveContentVerdict
+    #endif
 
     /// Launch the system age-range request (from the "Verify Age to Reveal"
     /// affordance). Returns the new verified-adult flag.
