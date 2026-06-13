@@ -578,9 +578,14 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
 
     private func block(for presentation: SensitiveShieldPresentation) -> some View {
         ZStack {
-            // ONE cohesive full-screen surface — extends under the nav bar and
-            // the input field via ignoresSafeArea.
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+            // ONE cohesive full-screen surface — extends under the nav bar, the
+            // input field, AND the keyboard via ignoresSafeArea(.all). The host
+            // must install this block on its OUTERMOST container (not an inner
+            // message-scroll area inset by the chrome) for the cover to actually
+            // reach the top/bottom bars. An opaque scrim sits over the material
+            // so no chrome reads through the translucency at the screen edges.
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(.all)
+            Rectangle().fill(Color.primary.opacity(0.04)).ignoresSafeArea(.all)
             VStack(spacing: 12) {
                 Image(systemName: "eye.slash.fill")
                     .font(.largeTitle)
