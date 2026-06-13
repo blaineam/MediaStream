@@ -539,7 +539,33 @@ extension View {
     ) -> some View {
         modifier(SensitiveSurfaceBlockModifier(blockKey: blockKey,
                                                policy: policy,
-                                               flaggedSensitive: flaggedSensitive))
+                                               flaggedSensitive: flaggedSensitive,
+                                               topInteractivePassthrough: 0))
+    }
+
+    /// Same FULL-BLEED block, but the top `topInteractivePassthrough` points
+    /// (the custom nav/header bar region, INCLUDING the top safe-area inset the
+    /// host folds in) DRAW under the cover yet do NOT capture touches — so the
+    /// host's custom header buttons (drawer / new-conversation / menu) that sit
+    /// BENEATH this overlay in the same container stay tappable and the user can
+    /// navigate away themselves. The visual blur still extends full-screen under
+    /// the translucent bar; only the hit-test region is inset from the top.
+    ///
+    /// Use this overload when the host's top bar is a CUSTOM in-content HStack
+    /// (Ari's `headerView`) rather than a system NavigationStack toolbar — a
+    /// system toolbar renders above an in-content overlay automatically, a
+    /// custom header does not. Pass the header bar height plus the top safe-area
+    /// inset as `topInteractivePassthrough`. ari.guards.convo-blur-cohesion.
+    public func sensitiveSurfaceBlock<P: SensitiveContentPolicy>(
+        blockKey: String,
+        policy: P,
+        flaggedSensitive: Bool,
+        topInteractivePassthrough: CGFloat
+    ) -> some View {
+        modifier(SensitiveSurfaceBlockModifier(blockKey: blockKey,
+                                               policy: policy,
+                                               flaggedSensitive: flaggedSensitive,
+                                               topInteractivePassthrough: topInteractivePassthrough))
     }
 }
 
@@ -547,6 +573,9 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
     let blockKey: String
     @ObservedObject var policy: P
     let flaggedSensitive: Bool
+    /// When > 0, the top this-many points of the cover draw the blur but pass
+    /// touches THROUGH to the host's custom header buttons beneath this overlay.
+    var topInteractivePassthrough: CGFloat = 0
 
     @State private var isRequestingVerification = false
     @State private var showVerificationFeedback = false
@@ -584,8 +613,34 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
             // message-scroll area inset by the chrome) for the cover to actually
             // reach the top/bottom bars. An opaque scrim sits over the material
             // so no chrome reads through the translucency at the screen edges.
+            //
+            // VISUAL layer: full-bleed blur + scrim, hit-testing DISABLED so it
+            // never swallows touches. When topInteractivePassthrough > 0 the
+            // touch-capturing layer below is inset from the top, letting the
+            // host's custom header buttons (which sit BENEATH this overlay)
+            // receive their taps while the blur still paints under them.
             Rectangle().fill(.ultraThinMaterial).ignoresSafeArea(.all)
+                .allowsHitTesting(false)
             Rectangle().fill(Color.primary.opacity(0.04)).ignoresSafeArea(.all)
+                .allowsHitTesting(false)
+            // Touch-absorbing layer: captures stray taps on the blurred body so
+            // the (now hidden) transcript beneath can't be interacted with, but
+            // leaves the top `topInteractivePassthrough` points free so the
+            // header bar stays tappable. With passthrough == 0 it fills the
+            // whole cover (gallery / non-custom-header hosts), preserving the
+            // original "absorb everything" behavior.
+            VStack(spacing: 0) {
+                if topInteractivePassthrough > 0 {
+                    Color.clear
+                        .frame(height: topInteractivePassthrough)
+                        .allowsHitTesting(false)
+                }
+                Rectangle()
+                    .fill(Color.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture {}
+            }
+            .ignoresSafeArea(.all)
             VStack(spacing: 12) {
                 Image(systemName: "eye.slash.fill")
                     .font(.largeTitle)
@@ -627,8 +682,9 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
             }
             .padding(20)
         }
-        .contentShape(Rectangle())
-        .onTapGesture {}
+        // Touch handling lives on the inset absorbing layer above (so the top
+        // header region can pass through). No outer contentShape/onTapGesture
+        // here — that would re-capture the whole frame and re-block the header.
         .alert("Age Verification", isPresented: $showVerificationFeedback) {
             Button("OK") { policy.clearVerificationOutcome() }
         } message: {
