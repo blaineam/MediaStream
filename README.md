@@ -133,9 +133,11 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
 - **Efficient Thumbnails**: Uses CGImageSource for memory-efficient RAW thumbnail generation
 - **Full Resolution Display**: RAW images display at full quality in slideshow view
 
-### 🔒 Sensitive Content Awareness (v2.5.0)
+### 🔒 Sensitive Content Awareness (v2.6.0)
 A complete, shared sensitive-content guard so every app embedding MediaStream blurs and gates flagged media **identically** — the host app injects its own age/verification policy and analyzer; MediaStream owns the presentation.
-- **Smooth-blur interstitials**: `SensitiveBlurRenderer` renders a real gaussian-blurred bitmap of the flagged item (never a pixelated or placeholder swap) with a "Sensitive Content" label.
+- **Blur as an OVERLAY over the real image (v2.6.0)**: inject a `SensitiveOverlayController` via `MediaGalleryConfiguration.sensitiveOverlay` and the grid/slideshow draw the REAL image with a SwiftUI `.blur` overlay on flagged items — a verified adult's reveal removes the overlay and the sharp image shows **instantly** (no cache rebuild). Sensitive thumbnails are **never** written to the disk cache.
+- **Generic, host-configurable copy (v2.6.0)**: `SensitiveBlockCopy` defaults to neutral "Sensitive Content" wording (no "conversation") for non-chat hosts; conversation hosts may override.
+- **Smooth-blur interstitials (legacy bitmap path)**: `SensitiveBlurRenderer` renders a real gaussian-blurred bitmap of the flagged item with a "Sensitive Content" label, for surfaces that can only consume a finished bitmap.
 - **Per-item + bulk blocking**: `.sensitiveContentShield(...)` guards a single thumbnail; `.sensitiveSurfaceBlock(...)` covers a whole gallery or conversation with ONE interstitial when a meaningful share of items is sensitive (`SensitiveBulkPolicy`: ≥25% of items, or ≥3). A verified adult's single **"Reveal All"** then un-blurs the entire surface at once (`revealAll()`) — no per-item tapping.
 - **Age-gated reveal (decision table)**: `SensitiveShieldPresentation.decide(...)` is the single source of truth — verified 18+ (or an active adult bypass) get **"Show Anyway"**; an undetermined-but-verifiable age gets **"Verify Age to Reveal"** (runs the system Declared Age Range request, then reveals on success); minors / unverifiable get the blur with **no** reveal affordance. Reveal state is session-only.
 - **Fail-closed**: `SensitiveContentVerdict.analysisFailed` keeps media shielded (and is never cached, so transient failures can be retried).
