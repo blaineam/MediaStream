@@ -133,6 +133,15 @@ A comprehensive SwiftUI package for displaying beautiful media galleries with ad
 - **Efficient Thumbnails**: Uses CGImageSource for memory-efficient RAW thumbnail generation
 - **Full Resolution Display**: RAW images display at full quality in slideshow view
 
+### 🔒 Sensitive Content Awareness (v2.5.0)
+A complete, shared sensitive-content guard so every app embedding MediaStream blurs and gates flagged media **identically** — the host app injects its own age/verification policy and analyzer; MediaStream owns the presentation.
+- **Smooth-blur interstitials**: `SensitiveBlurRenderer` renders a real gaussian-blurred bitmap of the flagged item (never a pixelated or placeholder swap) with a "Sensitive Content" label.
+- **Per-item + bulk blocking**: `.sensitiveContentShield(...)` guards a single thumbnail; `.sensitiveSurfaceBlock(...)` covers a whole gallery or conversation with ONE interstitial when a meaningful share of items is sensitive (`SensitiveBulkPolicy`: ≥25% of items, or ≥3). A verified adult's single **"Reveal All"** then un-blurs the entire surface at once (`revealAll()`) — no per-item tapping.
+- **Age-gated reveal (decision table)**: `SensitiveShieldPresentation.decide(...)` is the single source of truth — verified 18+ (or an active adult bypass) get **"Show Anyway"**; an undetermined-but-verifiable age gets **"Verify Age to Reveal"** (runs the system Declared Age Range request, then reveals on success); minors / unverifiable get the blur with **no** reveal affordance. Reveal state is session-only.
+- **Fail-closed**: `SensitiveContentVerdict.analysisFailed` keeps media shielded (and is never cached, so transient failures can be retried).
+- **Full-screen cover with interactive chrome**: `sensitiveSurfaceBlock(..., topInteractivePassthrough:)` paints full-bleed under the nav bar and input field while leaving the top navigation buttons tappable, so the user can navigate away themselves.
+- **Host integration**: conform your existing guard to `SensitiveContentPolicy` (age status, `canReveal`, `canRequestVerificationFromShield`, `verdict(forKey:dataProvider:)`, `revealAll()`, `requestAdultVerification()`, `anySensitive(in:)`). Private/excluded media is never analyzed.
+
 ## 📦 Installation
 
 ### Swift Package Manager
