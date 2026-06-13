@@ -163,8 +163,15 @@ public protocol SensitiveContentPolicy: ObservableObject {
     /// Analyze the bytes behind `key` (or return the cached session verdict).
     /// Returns `.safe` when the guard is inactive; `.analysisFailed` (fail
     /// closed, NOT cached) when analysis can't run.
+    ///
+    /// The data provider closure is explicitly `@concurrent` so this protocol
+    /// requirement has the SAME type in every consuming target regardless of
+    /// whether that target builds with `NonisolatedNonsendingByDefault`
+    /// (Enter Space's app target has it on, its file-provider targets do not —
+    /// without the explicit annotation the inferred isolation diverges and the
+    /// shared conformance fails to type-check).
     func verdict(forKey key: String,
-                 dataProvider: @escaping @Sendable () async -> Data?) async -> SensitiveContentVerdict
+                 dataProvider: @escaping @concurrent @Sendable () async -> Data?) async -> SensitiveContentVerdict
 
     /// Launch the system age-range request (from the "Verify Age to Reveal"
     /// affordance). Returns the new verified-adult flag.
