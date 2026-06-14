@@ -167,9 +167,21 @@ public struct MediaGalleryFullView: View {
                             showSlideshow = false
                         }
                     },
-                    // Only offer Back-to-grid when the user actually came from the
-                    // grid; a direct slideshow entry has no grid to return to.
-                    onBackToGrid: enteredSlideshowDirectly ? nil : {
+                    // ALWAYS offer Back-to-grid: `MediaGalleryFullView` ALWAYS
+                    // owns a grid (it is kept alive behind the slideshow), so the
+                    // slideshow must always show the Back-to-grid arrow and return
+                    // to the thumbnails — NOT a plain dismiss. Nulling this for a
+                    // direct slideshow entry (the old `enteredSlideshowDirectly ?
+                    // nil : …`) stripped normal Back-to-grid navigation from hosts
+                    // that open straight into the slideshow (Ari / Enter Space).
+                    // The narrow anti-bounce behavior the flag protected — a
+                    // fully-shielded gallery's blocked Done must NOT drop onto a
+                    // still-blocked grid and force a second Done — is preserved by
+                    // `onDismiss` above (it fully EXITS when `enteredSlideshowDirectly`),
+                    // which the bulk overlay's Reveal-gated Done and the persistent
+                    // dismiss `xmark` both call. This arrow simply un-covers the
+                    // grid (which, if bulk-blocked, shows its OWN block + Done).
+                    onBackToGrid: {
                         // Same reason as onDismiss — going back to grid
                         // shouldn't keep the just-viewed item playing in
                         // the background.

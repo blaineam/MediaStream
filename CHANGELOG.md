@@ -2,6 +2,15 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.3] - 2026-06-14
+
+### Fixed (sensitive-content gallery — two slideshow navigation defects)
+- **No reachable dismiss when the CURRENT item is individually shielded (per-item, not just bulk)**: in `MediaGalleryView`, the control bar carrying the Close/Back button is shown only `if … && !shouldBulkBlock` and it **auto-hides** — and the per-item shield (`currentOverlayVerdict.isShielded && !shouldBulkBlock`) is layered over it. So a single shielded slideshow item covered the auto-hiding bar with **no persistent way out** — the user was STUCK (v2.7.2 only added a persistent Done for the bulk case). The slideshow now shows a **persistent, never-auto-hidden top nav bar layered ABOVE the shield whenever the current item is shielded OR the gallery is bulk blocked**: a **Back-to-grid** arrow (id `sca.slideshow.persistentBack`) when a grid exists (`onBackToGrid != nil`), plus a **Dismiss** `xmark` (id `sca.slideshow.persistentDismiss`) calling `onDismiss`. The dismiss is an `xmark` (NOT labelled "Done"), so the bulk state still exposes exactly ONE element labelled "Done" (`sca.bulk.done`); the persistent dismiss is suppressed in the bulk case to avoid shadowing that Done. Share/Download remain gated off while shielded (v2.7.2's leak gate is unchanged). The adult-gated Reveal All stays on the per-item reveal control / bulk overlay.
+- **Back-to-grid regressed to a plain dismiss for direct slideshow entry**: `MediaGalleryFullView` had `onBackToGrid: enteredSlideshowDirectly ? nil : { … }`, which stripped the Back-to-grid arrow for hosts that open straight into the slideshow (Ari / Enter Space). `MediaGalleryFullView` **always** owns a grid (kept alive behind the slideshow), so `onBackToGrid` is now **always** wired — the slideshow always offers Back-to-grid (returning to the thumbnails) and a dismiss to leave entirely, even when shielded. The narrow anti-bounce behavior the flag protected — a fully-shielded gallery's blocked Done must NOT drop onto a still-blocked grid and force a second Done — is preserved differently: `onDismiss` still fully EXITS when `enteredSlideshowDirectly` (the bulk overlay's Reveal-gated Done and the persistent dismiss `xmark` both call it), while the Back-to-grid arrow simply un-covers the grid (which, if bulk-blocked, renders its OWN block + Done from v2.7.1/v2.7.2).
+
+### Tests
+- Added `testPerItemShieldedSlideshowHasReachableDismiss` (per-item shielded slideshow — `-scaStart slideshow -scaFlag some -scaAge undetermined` on a shielded item — exposes a reachable persistent Dismiss that leaves the gallery), `testGridEntrySlideshowShowsBackToGridAndReturns` (entering through the grid then into the slideshow shows the Back-to-grid arrow and returns to the grid), and `testBulkBlockSlideshowStillHasReachableDone` (the bulk-block slideshow still has a reachable `sca.bulk.done`) to `MediaStreamSCAUITests`. All existing tests stay green.
+
 ## [2.7.2] - 2026-06-13
 
 ### Fixed (sensitive-content gallery — CRITICAL slideshow gap)

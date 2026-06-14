@@ -559,7 +559,8 @@ public struct MediaGalleryView: View {
                                 .accessibilityIdentifier("sca.slideshow.share")
                             }
 
-                            // Close/Back button
+                            // Close/Back button. When a grid exists this is the
+                            // Back-to-grid arrow; otherwise a full-dismiss xmark.
                             MediaStreamGlassButton(action: {
                                 if let onBackToGrid = onBackToGrid {
                                     onBackToGrid()
@@ -571,6 +572,7 @@ public struct MediaGalleryView: View {
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundStyle(.primary)
                             }
+                            .accessibilityIdentifier(onBackToGrid != nil ? "sca.slideshow.backToGrid" : "sca.slideshow.close")
                         }
                     }
                     .padding(.leading)
@@ -635,6 +637,21 @@ public struct MediaGalleryView: View {
             // who can NEVER reveal) can always leave even without revealing.
             if shouldBulkBlock, !mediaItems.isEmpty {
                 bulkBlockOverlay
+            }
+
+            // PERSISTENT SHIELDED NAV (the per-item-stuck fix): WHENEVER the
+            // current item is shielded OR the whole gallery is bulk blocked, a
+            // never-auto-hidden top nav bar is layered ABOVE every shield so the
+            // user can ALWAYS get out — either Back-to-grid (when a grid exists,
+            // `onBackToGrid != nil`) or a full Dismiss. Without this, an
+            // individually shielded item (minority sensitive, NOT bulk blocked)
+            // covered the auto-hiding transport Close and left the user STUCK
+            // with no way out — v2.7.2 only added a persistent Done for the bulk
+            // case. The dismiss is an xmark (NOT labelled "Done"), so the bulk
+            // case still has EXACTLY ONE element labelled "Done" (sca.bulk.done).
+            // Share/Download stay gated off while shielded (no leak).
+            if currentOverlayVerdict.isShielded || shouldBulkBlock, !mediaItems.isEmpty {
+                persistentShieldedNav
             }
         }
         .contentShape(Rectangle())
@@ -1007,6 +1024,54 @@ public struct MediaGalleryView: View {
             // as not-hittable to XCUITest).
             .padding(.top, 56)
             .padding(.trailing, 16)
+        }
+        .transition(.opacity)
+    }
+
+    /// ALWAYS-VISIBLE, never-auto-hidden top nav bar shown whenever the current
+    /// item is shielded (per-item) OR the whole gallery is bulk blocked. Layered
+    /// ABOVE the sensitive shield so the user can ALWAYS leave: a Back-to-grid
+    /// arrow when a grid exists (`onBackToGrid != nil`) and a Dismiss xmark that
+    /// calls `onDismiss`. This is the fix for an individually shielded item that
+    /// previously hid the auto-hiding transport Close beneath the shield, leaving
+    /// the user stuck. The dismiss uses an xmark icon (NOT labelled "Done") so
+    /// the bulk-block state still exposes exactly ONE element labelled "Done"
+    /// (the block's `sca.bulk.done`). No Share/Download here — leak gating holds.
+    private var persistentShieldedNav: some View {
+        VStack {
+            HStack(spacing: 12) {
+                // Back-to-grid — ONLY when there is a grid to return to. Returns
+                // to the thumbnail grid rather than fully dismissing.
+                if let onBackToGrid = onBackToGrid {
+                    MediaStreamGlassButton(action: { onBackToGrid() }) {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+                    .accessibilityIdentifier("sca.slideshow.persistentBack")
+                }
+
+                Spacer()
+
+                // Dismiss — fully LEAVE the gallery. Present whenever the user
+                // is under a per-item shield so they are never stuck. In the
+                // BULK case the `bulkBlockOverlay` already owns the top-right
+                // dismiss (`sca.bulk.done`); suppressing this xmark there keeps
+                // exactly ONE top-right exit and avoids shadowing that Done.
+                if !shouldBulkBlock {
+                    MediaStreamGlassButton(action: { onDismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+                    .accessibilityIdentifier("sca.slideshow.persistentDismiss")
+                }
+            }
+            .padding(.leading)
+            .padding(.top)
+            .padding(.trailing)
+
+            Spacer()
         }
         .transition(.opacity)
     }

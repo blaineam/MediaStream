@@ -456,4 +456,108 @@ final class MediaStreamSCAUITests: XCTestCase {
         XCTAssertFalse(element(app, "sca.slideshow.tile-1.revealed").exists,
                        "The slideshow item must not remain revealed after backgrounding")
     }
+
+    // MARK: 10. Persistent shielded nav (v2.7.3) — per-item dismiss + back-to-grid
+
+    /// DEFECT 1 (v2.7.3): when the CURRENT slideshow item is INDIVIDUALLY shielded
+    /// (minority sensitive → NOT bulk blocked) the auto-hiding transport Close sat
+    /// UNDER the shield, leaving the user STUCK with no way out. The slideshow now
+    /// layers a PERSISTENT, never-auto-hidden nav bar ABOVE the shield carrying a
+    /// Dismiss control. This test opens straight into the slideshow on a shielded
+    /// tile as an UNDETERMINED viewer (no direct reveal), asserts the persistent
+    /// Dismiss is present + reachable, and that tapping it LEAVES the gallery.
+    func testPerItemShieldedSlideshowHasReachableDismiss() {
+        // flag=some flags only a MINORITY (tiles 1 & 3) so the bulk block does
+        // NOT fire — the per-item shield path is exercised. startIndex defaults
+        // to the first sensitive tile (1), which opens shielded.
+        let app = launch(age: "undetermined", flag: "some", start: "slideshow", startIndex: 1)
+
+        // Wait for the shielded slideshow item to settle; clear any system sheet.
+        _ = element(app, "sca.slideshow.tile-1.shielded").waitForExistence(timeout: 12)
+        dismissSystemAlerts()
+        XCTAssertTrue(element(app, "sca.slideshow.tile-1.shielded").exists,
+                      "The slideshow must open on an individually shielded item")
+
+        // The persistent Dismiss must be present and HITTABLE above the shield —
+        // this is the fix for being stuck under a per-item shield.
+        let dismiss = button(app, "sca.slideshow.persistentDismiss")
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 10),
+                      "A persistent Dismiss must be reachable whenever the current item is shielded")
+        XCTAssertTrue(dismiss.isHittable,
+                      "The persistent Dismiss must be hittable on top of the per-item shield")
+
+        // Tapping it must LEAVE the gallery (direct entry fully exits to harness).
+        dismiss.tap()
+        if !waitFor(app, "demo.openGrid", timeout: 6) {
+            dismissSystemAlerts()
+            if button(app, "sca.slideshow.persistentDismiss").exists {
+                button(app, "sca.slideshow.persistentDismiss").tap()
+            }
+        }
+        XCTAssertTrue(waitFor(app, "demo.openGrid"),
+                      "The persistent Dismiss must leave the shielded slideshow back to the harness")
+    }
+
+    /// DEFECT 2 (v2.7.3): the slideshow in `MediaGalleryFullView` must ALWAYS
+    /// offer a Back-to-grid arrow that RETURNS to the thumbnails (not a plain
+    /// dismiss) — the prior `enteredSlideshowDirectly ? nil : …` stripped it for
+    /// hosts that open straight into the slideshow. Open into the slideshow on a
+    /// NON-sensitive item (so the normal transport bar with the Back-to-grid arrow
+    /// is reachable, no shield), tap the arrow, and assert the grid is shown again
+    /// (the slideshow is gone and the grid toolbar Done — proof the grid is live —
+    /// is reachable).
+    func testGridEntrySlideshowShowsBackToGridAndReturns() {
+        // flag=some flags only tiles 1 & 3, so startIndex 0 opens the slideshow on
+        // a NON-sensitive item: no shield, normal transport chrome, and (because
+        // MediaGalleryFullView always owns a grid) a Back-to-grid arrow.
+        let app = launch(age: "verifiedAdult", flag: "some", start: "slideshow", startIndex: 0)
+
+        // Settle, then surface the (auto-hiding) transport chrome.
+        _ = element(app, "sca.slideshow.tile-0.revealed").waitForExistence(timeout: 12)
+        dismissSystemAlerts()
+        let backToGrid = button(app, "sca.slideshow.backToGrid")
+        if !backToGrid.waitForExistence(timeout: 6) {
+            app.tap()  // toggle the transport chrome back on
+        }
+        XCTAssertTrue(backToGrid.waitForExistence(timeout: 8),
+                      "The slideshow must ALWAYS offer a Back-to-grid arrow (a grid exists)")
+
+        // Tapping it must RETURN to the grid — the slideshow chrome disappears and
+        // the grid toolbar's Done becomes reachable again (proves it went to the
+        // grid, NOT a plain dismiss out of the gallery).
+        backToGrid.tap()
+        let toolbarDone = app.buttons["Done"].firstMatch
+        XCTAssertTrue(toolbarDone.waitForExistence(timeout: 8),
+                      "Back-to-grid must return to the thumbnail grid (toolbar Done present)")
+        XCTAssertFalse(button(app, "sca.slideshow.backToGrid").exists,
+                       "After Back-to-grid the slideshow (and its arrow) must be gone")
+        // It must NOT have dismissed the whole gallery — the harness's openGrid is
+        // only visible when the gallery has fully closed.
+        XCTAssertFalse(element(app, "demo.openGrid").exists,
+                       "Back-to-grid must NOT fully dismiss the gallery to the harness")
+    }
+
+    /// DEFECT-reconcile (v2.7.3): the bulk-block slideshow must STILL expose a
+    /// single reachable Done — the persistent per-item Dismiss is suppressed in
+    /// the bulk case so the block's own `sca.bulk.done` stays the one exit.
+    func testBulkBlockSlideshowStillHasReachableDone() {
+        let app = launch(age: "verifiedAdult", flag: "all", start: "slideshow", startIndex: 0)
+
+        let bulkDone = element(app, "sca.bulk.done")
+        XCTAssertTrue(bulkDone.waitForExistence(timeout: 12),
+                      "A fully-blocked slideshow must still show the bulk block's Done")
+        XCTAssertTrue(bulkDone.isHittable,
+                      "The bulk Done must be hittable on top of the shield")
+
+        // Exactly one labelled Done — the persistent Dismiss is an xmark (not
+        // "Done") AND is suppressed in the bulk case, so nothing duplicates it.
+        let doneButtons = app.buttons.matching(NSPredicate(format: "label == %@", "Done"))
+        XCTAssertEqual(doneButtons.count, 1,
+                       "Exactly one Done must remain while the slideshow is bulk blocked")
+
+        // And it dismisses the gallery.
+        bulkDone.tap()
+        XCTAssertTrue(waitFor(app, "demo.openGrid"),
+                      "The bulk slideshow Done must dismiss the gallery")
+    }
 }
