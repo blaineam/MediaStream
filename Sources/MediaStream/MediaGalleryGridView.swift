@@ -78,6 +78,13 @@ public struct MediaGalleryFullView: View {
     @State private var currentFilter: MediaFilter = .all
     @State private var lastViewedIndex: Int = 0
     @State private var hasInitializedSlideshow = false
+    /// True when the gallery was opened DIRECTLY into the slideshow (via
+    /// `initialSlideshowIndex`) rather than by tapping a grid cell. In that case
+    /// there is no grid the user "came from", so dismissing the slideshow (e.g.
+    /// the bulk-block Done on a fully sensitive gallery) must FULLY exit the
+    /// gallery instead of dropping onto the grid — which would be bulk blocked
+    /// too and force a second Done.
+    @State private var enteredSlideshowDirectly = false
 
     public init(
         mediaItems: [any MediaItem],
@@ -101,7 +108,15 @@ public struct MediaGalleryFullView: View {
 
     public var body: some View {
         ZStack {
-            // Grid view - always present but hidden when slideshow is shown
+            // Grid view - always present but hidden when slideshow is shown.
+            // Kept alive (via `.opacity`, not conditional removal) so its
+            // view-scoped reveal state on the SHARED overlay controller survives
+            // grid→slideshow navigation (removing it would fire the grid's
+            // `onDisappear` → `resetReveals()`). `suppressBulkOverlay` stops the
+            // hidden grid from also drawing its OWN bulk block while the slideshow
+            // is on top — otherwise a fully-sensitive gallery rendered a DUPLICATE
+            // `sca.bulk.done` / `sca.bulk.absorber` underneath, leaving two Done
+            // buttons and the slideshow's Done reading as not-hittable.
             MediaGalleryGridView(
                 mediaItems: mediaItems,
                 configuration: configuration,
@@ -110,10 +125,13 @@ public struct MediaGalleryFullView: View {
                 includeBuiltInShareAction: includeBuiltInShareAction,
                 initialScrollIndex: lastViewedIndex,
                 initialFilter: currentFilter,
+                suppressBulkOverlay: showSlideshow,
                 onSelect: { _ in },
                 onSelectWithFilteredItems: { filteredItems, index in
                     slideshowItems = filteredItems
                     selectedIndex = index
+                    // Came from the grid — Back-to-grid is meaningful here.
+                    enteredSlideshowDirectly = false
                     // Cancel queued grid thumbnail loads to free bandwidth for slideshow
                     Task { await ThumbnailLoadingQueue.shared.cancelAllPending() }
                     showSlideshow = true
@@ -124,6 +142,7 @@ public struct MediaGalleryFullView: View {
                 onDismiss: onDismiss
             )
             .opacity(showSlideshow ? 0 : 1)
+            .allowsHitTesting(!showSlideshow)
 
             // Slideshow view - shown on top when active
             if showSlideshow {
@@ -139,9 +158,18 @@ public struct MediaGalleryFullView: View {
                             name: MediaPlaybackService.externalPauseNotification,
                             object: nil
                         )
-                        showSlideshow = false
+                        if enteredSlideshowDirectly {
+                            // Opened straight into the slideshow — there is no grid
+                            // to fall back to (it would be bulk blocked too), so a
+                            // full dismiss exits the gallery entirely.
+                            onDismiss()
+                        } else {
+                            showSlideshow = false
+                        }
                     },
-                    onBackToGrid: {
+                    // Only offer Back-to-grid when the user actually came from the
+                    // grid; a direct slideshow entry has no grid to return to.
+                    onBackToGrid: enteredSlideshowDirectly ? nil : {
                         // Same reason as onDismiss — going back to grid
                         // shouldn't keep the just-viewed item playing in
                         // the background.
@@ -168,6 +196,9 @@ public struct MediaGalleryFullView: View {
                 slideshowItems = mediaItems
                 selectedIndex = clampedIndex
                 lastViewedIndex = clampedIndex
+                // Direct slideshow entry — Back-to-grid is meaningless; dismiss
+                // must fully exit the gallery.
+                enteredSlideshowDirectly = true
                 // Cancel queued grid thumbnail loads to free bandwidth for slideshow
                 Task { await ThumbnailLoadingQueue.shared.cancelAllPending() }
                 showSlideshow = true
@@ -189,6 +220,11 @@ public struct MediaGalleryGridView: View {
     let includeBuiltInShareAction: Bool
     let initialScrollIndex: Int?
     let initialFilter: MediaFilter
+    /// When true, this grid does NOT draw its own sensitive bulk-block overlay
+    /// (the `MediaGalleryFullView` sets it while the slideshow is on top so the
+    /// hidden grid behind it doesn't render a DUPLICATE `sca.bulk.done` /
+    /// `sca.bulk.absorber` beneath the slideshow's own block).
+    let suppressBulkOverlay: Bool
     let onSelect: (Int) -> Void
     /// Callback with filtered items and index - use this when you need to respect filters in MediaGalleryView
     let onSelectWithFilteredItems: (([any MediaItem], Int) -> Void)?
@@ -242,6 +278,7 @@ public struct MediaGalleryGridView: View {
         self.includeBuiltInShareAction = includeBuiltInShareAction
         self.initialScrollIndex = initialScrollIndex
         self.initialFilter = initialFilter
+        self.suppressBulkOverlay = false
         self.onSelect = onSelect
         self.onSelectWithFilteredItems = nil
         self.onFilterChange = nil
@@ -259,6 +296,7 @@ public struct MediaGalleryGridView: View {
         includeBuiltInShareAction: Bool = true,
         initialScrollIndex: Int? = nil,
         initialFilter: MediaFilter = .all,
+        suppressBulkOverlay: Bool = false,
         onSelect: @escaping (Int) -> Void,
         onSelectWithFilteredItems: @escaping ([any MediaItem], Int) -> Void,
         onFilterChange: ((MediaFilter) -> Void)? = nil,
@@ -271,6 +309,7 @@ public struct MediaGalleryGridView: View {
         self.includeBuiltInShareAction = includeBuiltInShareAction
         self.initialScrollIndex = initialScrollIndex
         self.initialFilter = initialFilter
+        self.suppressBulkOverlay = suppressBulkOverlay
         self.onSelect = onSelect
         self.onSelectWithFilteredItems = onSelectWithFilteredItems
         self.onFilterChange = onFilterChange
@@ -284,19 +323,16 @@ public struct MediaGalleryGridView: View {
         filteredItems.compactMap { ($0 as? SensitiveOverlayItem)?.sensitiveOverlayKey }
     }
 
-    /// Count of filtered items whose key is still shielded right now.
-    private var shieldedCount: Int {
-        guard let overlay = configuration.sensitiveOverlay, overlay.isActive() else { return 0 }
-        return sensitiveKeys.filter { overlay.overlayVerdict($0).isShielded }.count
-    }
-
     /// Whether the WHOLE grid should be covered by one bulk block + Reveal-All
-    /// (a majority/threshold of items are still shielded). Driven by the shared
-    /// `SensitiveBulkPolicy` so it matches the conversation block threshold.
+    /// (a majority/threshold of items are still shielded). Delegates to the
+    /// controller's SHARED `shouldBulkBlock(forKeys:totalCount:)` gate so the grid
+    /// and the slideshow can NEVER disagree about whether the gallery is fully blocked —
+    /// the slideshow reuses the exact same gate to present its own persistent
+    /// Done + Reveal-All (previously it had no bulk block at all).
     private var shouldBulkBlock: Bool {
-        guard configuration.sensitiveOverlay?.isActive() == true else { return false }
-        return SensitiveBulkPolicy.shouldBulkBlock(
-            sensitiveCount: shieldedCount, totalCount: filteredItems.count)
+        guard !suppressBulkOverlay else { return false }
+        guard let overlay = configuration.sensitiveOverlay else { return false }
+        return overlay.shouldBulkBlock(forKeys: sensitiveKeys, totalCount: filteredItems.count)
     }
 
     private var gridColumns: [GridItem] {

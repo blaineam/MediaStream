@@ -330,6 +330,105 @@ final class MediaStreamSCAUITests: XCTestCase {
                        "Content must not remain revealed after backgrounding the app")
     }
 
+    // MARK: 8. Slideshow bulk block — persistent Done + share leak gated (v2.7.2)
+
+    /// CRITICAL gap (v2.7.2): when the WHOLE gallery is sensitive and the app
+    /// opens straight into the SLIDESHOW (Ari / Enter Space), the slideshow must
+    /// present the SAME bulk block the grid does — a persistent, always-on-top
+    /// Done (never auto-hidden) plus an adult-gated Reveal All. Previously the
+    /// slideshow had NO bulk block, so the shield covered the content and the
+    /// auto-hiding Close sat UNDER it: the user was STUCK with no Done. This test
+    /// (undetermined viewer — no direct reveal) asserts EXACTLY ONE Done exists,
+    /// it DISMISSES the gallery without revealing, and the Share control is ABSENT
+    /// while blocked.
+    func testSlideshowBulkBlockHasSingleDoneAndNoShareUndetermined() {
+        let app = launch(age: "undetermined", flag: "all", start: "slideshow", startIndex: 0)
+
+        // The slideshow's persistent bulk Done must appear and be hittable above
+        // the shield.
+        let bulkDone = element(app, "sca.bulk.done")
+        XCTAssertTrue(bulkDone.waitForExistence(timeout: 12),
+                      "A fully-sensitive slideshow must show the bulk block's persistent Done")
+        XCTAssertTrue(bulkDone.isHittable,
+                      "The slideshow bulk Done must be hittable on top of the shield")
+
+        // EXACTLY ONE Done may exist in this state.
+        let doneButtons = app.buttons.matching(NSPredicate(format: "label == %@", "Done"))
+        XCTAssertEqual(doneButtons.count, 1,
+                       "Exactly one Done must be visible while the slideshow is fully blocked")
+
+        // The Share control must be ABSENT while the sensitive item is unrevealed —
+        // no exfiltration of unrevealed sensitive media.
+        XCTAssertFalse(element(app, "sca.slideshow.share").exists,
+                       "Share must be absent while the slideshow item is sensitive and unrevealed")
+        XCTAssertFalse(app.buttons["Download"].exists,
+                       "Download must be absent while the slideshow item is sensitive and unrevealed")
+
+        // The single Done DISMISSES the gallery without revealing — straight back
+        // to the harness (a direct slideshow entry fully exits, not back to grid).
+        bulkDone.tap()
+        XCTAssertTrue(waitFor(app, "demo.openGrid"),
+                      "The single slideshow Done must dismiss the gallery without revealing")
+    }
+
+    /// Verified-adult counterpart: the slideshow bulk block offers Reveal All;
+    /// after revealing, the block clears and the Share control RETURNS (the now-
+    /// revealed item is exportable). Confirms the share-gate is keyed on the
+    /// shielded state, not a blanket disable.
+    func testSlideshowBulkBlockRevealAllRestoresShareVerifiedAdult() {
+        let app = launch(age: "verifiedAdult", flag: "all", start: "slideshow", startIndex: 0)
+
+        // Bulk block with Reveal All, and Share gated off while blocked.
+        XCTAssertTrue(waitFor(app, "sca.bulk.revealAll"),
+                      "A verified adult must see Reveal All on the fully-blocked slideshow")
+        XCTAssertFalse(element(app, "sca.slideshow.share").exists,
+                       "Share must be hidden while the slideshow is bulk blocked")
+
+        // Reveal everything — the block clears.
+        element(app, "sca.bulk.revealAll").tap()
+        XCTAssertTrue(waitFor(app, "sca.slideshow.tile-0.revealed"),
+                      "Reveal All must un-blur the current slideshow item")
+
+        // The transport chrome may auto-hide; tap the viewer to toggle controls
+        // back so the (now-allowed) Share button is on screen. Retry the toggle
+        // once since a single tap could hide controls that were already showing.
+        XCTAssertTrue(waitFor(app, "sca.slideshow.tile-0.revealed", timeout: 6))
+        let share = button(app, "sca.slideshow.share")
+        if !share.waitForExistence(timeout: 3) {
+            app.tap()
+            if !share.waitForExistence(timeout: 3) { app.tap() }
+        }
+        XCTAssertTrue(share.waitForExistence(timeout: 8),
+                      "Share must RETURN once the slideshow item is revealed")
+
+        // And the bulk block is gone (no more Reveal All / bulk Done).
+        XCTAssertFalse(element(app, "sca.bulk.revealAll").exists,
+                       "Reveal All must disappear once everything is revealed")
+        XCTAssertFalse(element(app, "sca.bulk.done").exists,
+                       "The bulk Done must disappear once the gallery is no longer blocked")
+    }
+
+    /// A MINOR opening straight into a fully-sensitive slideshow must get NO
+    /// Reveal All but MUST still be able to leave via the persistent Done.
+    func testSlideshowBulkBlockMinorNoRevealButCanDismiss() {
+        let app = launch(age: "minor", flag: "all", start: "slideshow", startIndex: 0)
+
+        let bulkDone = element(app, "sca.bulk.done")
+        XCTAssertTrue(bulkDone.waitForExistence(timeout: 12),
+                      "A minor in a fully-blocked slideshow must still get a persistent Done")
+        XCTAssertFalse(element(app, "sca.bulk.revealAll").exists,
+                       "A minor must never see Reveal All in the slideshow")
+        XCTAssertFalse(element(app, "sca.slideshow.share").exists,
+                       "A minor must never be able to share unrevealed sensitive media")
+        XCTAssertTrue(bulkDone.isHittable,
+                      "A minor must always be able to dismiss the blocked slideshow")
+        bulkDone.tap()
+        XCTAssertTrue(waitFor(app, "demo.openGrid"),
+                      "The minor's Done must dismiss the blocked slideshow")
+    }
+
+    // MARK: 9. Re-guard on background → foreground (v2.7.1 — scenePhase)
+
     /// Same re-guard, exercised in the full-screen slideshow: reveal a shielded
     /// item, background, reactivate, and assert it is shielded again.
     func testSlideshowRevealReGuardsAfterBackgrounding() {

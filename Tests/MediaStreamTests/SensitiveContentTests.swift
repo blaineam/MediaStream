@@ -377,6 +377,69 @@ final class SensitiveContentTests: XCTestCase {
         )
         XCTAssertFalse(c.canRevealKey("safe"), "A non-shielded key must not offer a reveal control")
     }
+
+    // MARK: Shared bulk-block gate (grid ⇄ slideshow agreement, v2.7.2)
+
+    /// Helper: a controller whose every passed key is base-shielded.
+    @MainActor
+    private func shieldingController(active: Bool = true) -> SensitiveOverlayController {
+        SensitiveOverlayController(
+            overlayVerdict: { _ in .shielded(isError: false) },
+            diskPersistable: { _ in false },
+            canRevealKey: { _ in true },
+            canVerifyKey: { _ in false },
+            revealKey: { _ in },
+            revealAllAction: {},
+            requestVerification: { true },
+            isActive: { active },
+            canRevealAll: { true }
+        )
+    }
+
+    /// THE denominator-bug guard: the slideshow's keys are GATED keys only (safe
+    /// items have no key). A MINORITY of flagged items in a larger gallery must
+    /// NOT bulk-block — the total count, not the gated-key count, is the
+    /// denominator. (2 flagged of 12 → 16% < 25% threshold and < count-3.)
+    @MainActor
+    func testSharedGateMinorityDoesNotBulkBlock() {
+        let c = shieldingController()
+        XCTAssertFalse(
+            c.shouldBulkBlock(forKeys: ["tile-1", "tile-3"], totalCount: 12),
+            "A minority of flagged items must not bulk-block the whole gallery")
+    }
+
+    /// A fully-sensitive gallery (every item gated + shielded) bulk-blocks.
+    @MainActor
+    func testSharedGateMajorityBulkBlocks() {
+        let c = shieldingController()
+        let keys = (0..<12).map { "tile-\($0)" }
+        XCTAssertTrue(
+            c.shouldBulkBlock(forKeys: keys, totalCount: 12),
+            "A fully-sensitive gallery must bulk-block")
+    }
+
+    /// The gate is false when the guard is inactive, regardless of keys.
+    @MainActor
+    func testSharedGateInactiveGuardNeverBlocks() {
+        let c = shieldingController(active: false)
+        let keys = (0..<12).map { "tile-\($0)" }
+        XCTAssertFalse(
+            c.shouldBulkBlock(forKeys: keys, totalCount: 12),
+            "An inactive guard must never bulk-block")
+    }
+
+    /// The gate reads reveal state live: once a verified adult reveals all, the
+    /// shielded count drops to zero and the block clears (grid + slideshow agree).
+    @MainActor
+    func testSharedGateClearsAfterRevealAll() {
+        let c = shieldingController()
+        let keys = (0..<12).map { "tile-\($0)" }
+        XCTAssertTrue(c.shouldBulkBlock(forKeys: keys, totalCount: 12))
+        c.revealAllAction()
+        XCTAssertFalse(
+            c.shouldBulkBlock(forKeys: keys, totalCount: 12),
+            "After Reveal-All the gate must drop so the block disappears")
+    }
 }
 
 /// Minimal in-memory policy exercising the bulk-reveal contract shared by

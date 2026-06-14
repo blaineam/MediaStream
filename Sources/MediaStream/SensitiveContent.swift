@@ -584,6 +584,30 @@ public final class SensitiveOverlayController: ObservableObject {
     /// flips its underlying policy state — e.g. inside its own `objectWillChange`
     /// observation). Convenience for hosts whose policy publishes separately.
     public func notifyChanged() { objectWillChange.send() }
+
+    // MARK: Shared bulk-block gate (grid ⇄ slideshow agreement)
+
+    /// SINGLE source of truth for "should the whole gallery be covered by one
+    /// bulk block + Reveal-All right now?". Both `MediaGalleryGridView` and the
+    /// slideshow `MediaGalleryView` call this so they can NEVER disagree about
+    /// whether the gallery is fully blocked — the slideshow previously had no
+    /// bulk block at all, which left a fully sensitive gallery with no reachable
+    /// Done and a live Share leak.
+    ///
+    /// - Parameters:
+    ///   - sensitiveKeys: the stable keys of the GATED items only (safe items
+    ///     have no key). These drive the shielded count, read live through
+    ///     `overlayVerdict` so a verified adult's reveal drops the gate to false.
+    ///   - totalCount: the TOTAL number of items on the surface (gated + safe).
+    ///     This is the denominator the fraction threshold uses — passing only
+    ///     the gated-key count here would make a minority of flagged items look
+    ///     like "100% sensitive" and wrongly bulk-block.
+    public func shouldBulkBlock(forKeys sensitiveKeys: [String], totalCount: Int) -> Bool {
+        guard isActive() else { return false }
+        let shielded = sensitiveKeys.filter { overlayVerdict($0).isShielded }.count
+        return SensitiveBulkPolicy.shouldBulkBlock(
+            sensitiveCount: shielded, totalCount: totalCount)
+    }
 }
 
 /// A `MediaItem` that participates in the overlay-blur gallery. The gallery

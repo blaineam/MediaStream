@@ -2,6 +2,17 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.2] - 2026-06-13
+
+### Fixed (sensitive-content gallery — CRITICAL slideshow gap)
+- **A fully-sensitive SLIDESHOW had no dismiss and leaked**: the always-reachable bulk block existed only in the GRID (`MediaGalleryGridView.bulkBlockOverlay`). The slideshow (`MediaGalleryView`) had no bulk block — only a top control bar with a Share button and an **auto-hiding** Close. When the whole gallery was sensitive, the shield covered the content and the auto-hiding Close sat UNDER it, so a user who opened straight into the slideshow (Ari / Enter Space) was **stuck with no Done** (critical for minors, who can never reveal). The slideshow now presents the SAME persistent bulk block: an always-on-top `Done` (id `sca.bulk.done`, never auto-hidden) plus an adult-gated `Reveal All` (id `sca.bulk.revealAll`) — exactly ONE Done in that state, and it dismisses without revealing.
+- **Unrevealed sensitive media could be exfiltrated from the slideshow**: the slideshow's `Share` and per-item `Download` controls are now **hidden whenever the current item is sensitive and not revealed**. Non-sensitive items, or items a verified adult has revealed, share/download normally.
+- **Extracted a SHARED bulk-block gate**: `SensitiveOverlayController.shouldBulkBlock(forKeys:totalCount:)` is now the single source of truth both the grid and the slideshow call, so they can never disagree about whether the gallery is fully blocked. The denominator is the TOTAL item count (gated + safe) — passing only the gated-key count would make a minority of flagged items look "100% sensitive" and wrongly bulk-block.
+- **Duplicate bulk overlay under the slideshow**: `MediaGalleryFullView` kept the grid alive (via `.opacity`) behind the slideshow; when fully sensitive, the grid drew its OWN bulk block underneath, producing two `sca.bulk.done` buttons (the slideshow's read as not-hittable). The grid now takes a `suppressBulkOverlay` flag and stops drawing its block while the slideshow is on top. A direct slideshow entry's `Done` fully exits the gallery (no bounce to a second identical block).
+
+### Tests
+- Added `testSlideshowBulkBlockHasSingleDoneAndNoShareUndetermined` (exactly one Done, dismisses without revealing, Share + Download absent), `testSlideshowBulkBlockRevealAllRestoresShareVerifiedAdult` (Reveal All clears the block and Share returns), and `testSlideshowBulkBlockMinorNoRevealButCanDismiss` to `MediaStreamSCAUITests`. Added unit tests for the shared `shouldBulkBlock(forKeys:totalCount:)` gate (minority does NOT block, majority blocks, inactive guard never blocks, clears after Reveal-All).
+
 ## [2.7.1] - 2026-06-13
 
 ### Fixed (sensitive-content gallery)

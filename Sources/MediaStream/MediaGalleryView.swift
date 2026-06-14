@@ -266,6 +266,33 @@ public struct MediaGalleryView: View {
         return overlay.overlayVerdict(key)
     }
 
+    /// Stable sensitive keys for EVERY item the slideshow holds (nil-filtered).
+    /// The slideshow is opened with the SAME filtered list the grid showed, so
+    /// these keys match the grid's — driving an identical bulk-block decision.
+    private var sensitiveKeys: [String] {
+        mediaItems.compactMap { ($0 as? SensitiveOverlayItem)?.sensitiveOverlayKey }
+    }
+
+    /// Whether the WHOLE slideshow should be covered by one persistent bulk
+    /// block + Reveal-All. Uses the controller's SHARED `shouldBulkBlock(forKeys:totalCount:)`
+    /// gate — the SAME gate the grid uses — so a fully sensitive gallery that
+    /// opens straight into the slideshow (Ari / Enter Space) is blocked exactly
+    /// like the grid: a persistent, always-on-top Done that is never auto-hidden,
+    /// plus an adult-gated Reveal All. Without this the user was STUCK — the
+    /// auto-hiding Close sat UNDER the shield with no way out (critical for minors).
+    private var shouldBulkBlock: Bool {
+        guard let overlay = configuration.sensitiveOverlay else { return false }
+        return overlay.shouldBulkBlock(forKeys: sensitiveKeys, totalCount: mediaItems.count)
+    }
+
+    /// True when the CURRENT item is sensitive and NOT yet revealed — used to
+    /// HARD-BLOCK leak paths (Share / per-item Download) so unrevealed sensitive
+    /// media can never be exfiltrated. Non-sensitive items, or items revealed by
+    /// a verified adult, share / download normally.
+    private var currentItemBlocksExport: Bool {
+        currentOverlayVerdict.isShielded
+    }
+
     public var body: some View {
         ZStack {
             configuration.backgroundColor
@@ -407,8 +434,13 @@ public struct MediaGalleryView: View {
                 emptyStateView
             }
 
-            // Controls on top so they receive taps
-            if configuration.showControls && showControls && !mediaItems.isEmpty {
+            // Controls on top so they receive taps. SUPPRESSED entirely while the
+            // gallery is bulk blocked: the blocked content isn't interactable, and
+            // hiding the transport chrome (counter, Share, Download, transport row,
+            // auto-hiding Close) guarantees the bulk overlay's persistent Done is
+            // the ONLY top-right control — so it can never be shadowed (hittable)
+            // and there is exactly ONE Done.
+            if configuration.showControls && showControls && !mediaItems.isEmpty && !shouldBulkBlock {
                 VStack(spacing: 0) {
                     // Top: Slide counter and buttons
                     HStack {
@@ -424,11 +456,16 @@ public struct MediaGalleryView: View {
 
                         // Right side buttons
                         HStack(spacing: 12) {
-                            // Download button for current item only (slideshow mode)
-                            MediaDownloadButton(
-                                mediaItems: [mediaItems[safeIndex]],
-                                headerProvider: { url in await MediaStreamConfiguration.headersAsync(for: url) }
-                            )
+                            // Download button for current item only (slideshow mode).
+                            // HARD-BLOCK leak path: hidden while the current item is
+                            // sensitive and not revealed — unrevealed sensitive media
+                            // must never be exported to disk / share.
+                            if !currentItemBlocksExport {
+                                MediaDownloadButton(
+                                    mediaItems: [mediaItems[safeIndex]],
+                                    headerProvider: { url in await MediaStreamConfiguration.headersAsync(for: url) }
+                                )
+                            }
 
                             // Custom action buttons
                             ForEach(configuration.customActions) { customAction in
@@ -508,11 +545,18 @@ public struct MediaGalleryView: View {
                                 }
                             }
 
-                            // Share button
-                            MediaStreamGlassButton(action: { shareCurrentItem(); resetControlsTimer() }) {
-                                Image(systemName: "square.and.arrow.up")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.primary)
+                            // Share button. HARD-BLOCK leak path: ABSENT whenever the
+                            // current item is sensitive and not revealed, so unrevealed
+                            // sensitive media can never be exfiltrated via the share
+                            // sheet. Reappears for non-sensitive items or after a
+                            // verified adult reveals the current item.
+                            if !currentItemBlocksExport {
+                                MediaStreamGlassButton(action: { shareCurrentItem(); resetControlsTimer() }) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                }
+                                .accessibilityIdentifier("sca.slideshow.share")
                             }
 
                             // Close/Back button
@@ -555,7 +599,11 @@ public struct MediaGalleryView: View {
             // BOTTOM, so the reveal button's frame can never intersect them and
             // both stay independently hittable. Once revealed the verdict flips
             // to `.none` and this overlay disappears.
-            if currentOverlayVerdict.isShielded, !mediaItems.isEmpty {
+            //
+            // Suppressed while the WHOLE gallery is bulk blocked — that state
+            // owns the single Reveal-All + persistent Done in `bulkBlockOverlay`
+            // below, so there is exactly ONE reveal affordance and ONE Done.
+            if currentOverlayVerdict.isShielded, !mediaItems.isEmpty, !shouldBulkBlock {
                 slideshowRevealOverlay
             }
 
@@ -575,6 +623,18 @@ public struct MediaGalleryView: View {
             // Flat crop projection picker overlay
             if showFlatProjectionPicker {
                 flatProjectionPickerOverlay
+            }
+
+            // BULK BLOCK (v2.7.2 — the slideshow gap): when a majority/threshold
+            // of the gallery's items are still shielded, ONE persistent block
+            // covers the slideshow with a single adult-gated Reveal-All AND an
+            // always-on-top Done. This MIRRORS the grid's `bulkBlockOverlay`
+            // (same `sca.bulk.done` / `sca.bulk.revealAll` ids, same block
+            // visuals) and is layered LAST so it sits above the per-item shield
+            // and the auto-hiding transport chrome — the user (including a minor
+            // who can NEVER reveal) can always leave even without revealing.
+            if shouldBulkBlock, !mediaItems.isEmpty {
+                bulkBlockOverlay
             }
         }
         .contentShape(Rectangle())
@@ -875,6 +935,80 @@ public struct MediaGalleryView: View {
             )
             .frame(maxWidth: 260, maxHeight: 420)
         }
+    }
+
+    /// Full-slideshow sensitive block with a single Reveal-All AND an
+    /// always-on-top Done — the slideshow counterpart to the grid's
+    /// `bulkBlockOverlay`. The block visuals + touch-absorber sit BELOW the Done
+    /// chip in the ZStack so the dismiss affordance is never captured, and the
+    /// whole block is layered ABOVE the per-item shield and the auto-hiding
+    /// transport chrome. The Reveal-All button is adult-gated by the controller
+    /// (`canRevealKey`), so a minor sees only the block + Done and can always
+    /// leave without revealing (essential for minors). Carries the SAME
+    /// accessibility ids as the grid (`sca.bulk.done` / `sca.bulk.revealAll`).
+    private var bulkBlockOverlay: some View {
+        let overlay = configuration.sensitiveOverlay ?? .inactive
+        let canReveal = sensitiveKeys.contains { overlay.canRevealKey($0) }
+        return ZStack {
+            // Visual blur + scrim. The absorber catches stray taps on the hidden
+            // slideshow content (including the transport chrome beneath), but the
+            // Done chip drawn AFTER it in the ZStack stays hittable on top.
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+            Rectangle().fill(Color.black.opacity(0.05)).ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {}
+                .accessibilityIdentifier("sca.bulk.absorber")
+
+            VStack(spacing: 14) {
+                Image(systemName: "eye.slash.fill")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("Sensitive Content")
+                    .font(.headline)
+                Text(canReveal
+                     ? "This gallery contains sensitive media. Tap Reveal All to view it."
+                     : "This gallery contains sensitive media and can't be revealed on this account.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                if canReveal {
+                    Button {
+                        overlay.revealAllAction()
+                    } label: {
+                        Label("Reveal All", systemImage: "eye.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("sca.bulk.revealAll")
+                }
+            }
+            .padding(20)
+
+            // Always-reachable Done — ON TOP of the block so it is never captured
+            // by the touch-absorber. This is the ONLY way out of a fully sensitive
+            // slideshow (the auto-hiding Close sits under the shield). It calls
+            // `onDismiss` to fully LEAVE the gallery rather than `onBackToGrid` —
+            // a fully-blocked gallery has nothing un-shielded to return to in the
+            // grid (which would just be bulk blocked too), so the user exits
+            // outright instead of being bounced to a second identical block.
+            VStack {
+                HStack {
+                    Spacer()
+                    Button("Done") { onDismiss() }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("sca.bulk.done")
+                }
+                Spacer()
+            }
+            // Keep the Done clear of the status-bar / notch region and the
+            // slideshow's auto-hiding Close button so its hit center is always
+            // in-bounds and on top (the slideshow hides its status bar, so a
+            // top-edge button can otherwise land under the unsafe area and read
+            // as not-hittable to XCUITest).
+            .padding(.top, 56)
+            .padding(.trailing, 16)
+        }
+        .transition(.opacity)
     }
 
     /// Reveal / verify-age control for a shielded full-screen item. Pinned to
