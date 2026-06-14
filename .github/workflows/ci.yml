@@ -69,6 +69,56 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 
+  demo-uitests:
+    name: Demo App XCUITest (iOS Simulator)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Demo Project
+        working-directory: Example
+        run: xcodegen generate
+
+      - name: Pick an available iOS Simulator
+        id: sim
+        run: |
+          cat > /tmp/pick_sim.py <<'PY'
+          import json, subprocess
+          data = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          cands = [dev for runtime, devs in data["devices"].items()
+                   if "iOS" in runtime
+                   for dev in devs
+                   if dev.get("isAvailable") and dev["name"].startswith("iPhone")]
+          print(cands[-1]["udid"] if cands else "")
+          PY
+          UDID=$(python3 /tmp/pick_sim.py)
+          echo "Picked simulator: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Boot Simulator
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b || true
+
+      - name: Run XCUITests
+        working-directory: Example
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project MediaStreamDemo.xcodeproj \
+            -scheme MediaStreamDemo \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/dd \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee build/uitest.log
+            # NOTE: tee (not tail) — the full log is preserved for inspection.
+
   lint:
     name: SwiftLint
     runs-on: macos-15

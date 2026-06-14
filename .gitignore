@@ -8,3 +8,9 @@ build/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 .claude/
+
+# Demo app: the Xcode project is generated from Example/project.yml by XcodeGen
+# (regenerated locally and in CI), so it is not tracked.
+Example/MediaStreamDemo.xcodeproj/
+Example/build/
+Example/MediaStreamDemo/Info.generated.plist

@@ -426,25 +426,52 @@ public enum SensitiveOverlayVerdict: Equatable, Sendable {
 /// the overlay disappears the moment `revealAll()`/`reveal(_:)` publishes.
 @MainActor
 public final class SensitiveOverlayController: ObservableObject {
-    /// Resolve the overlay verdict for an item's stable key. Returns `.none`
-    /// when the guard is inactive, the item is safe, or it has been revealed.
-    public let overlayVerdict: (String) -> SensitiveOverlayVerdict
-    /// True only when this item's REAL thumbnail is safe to persist to the disk
-    /// thumbnail cache (analyzed safe, or revealed). A sensitive/unanalyzed item
-    /// returns false → the gallery must NOT write its bitmap to disk.
-    public let diskPersistable: (String) -> Bool
-    /// Whether a reveal affordance should be offered for `key` right now.
-    public let canRevealKey: (String) -> Bool
-    /// Whether a "verify age" affordance should be offered for `key`.
-    public let canVerifyKey: (String) -> Bool
-    /// Per-item reveal ("Show Anyway"), verified-adult only.
-    public let revealKey: (String) -> Void
-    /// Bulk reveal — a verified adult unblocks the whole session at once.
-    public let revealAllAction: () -> Void
+    // MARK: Host-injected BASE closures
+    //
+    // These describe the host's policy state (verdict, disk-persistability,
+    // age-gating). They are the BASE layer; the controller overlays its OWN
+    // VIEW-SCOPED reveal state (`viewRevealedKeys` / `viewRevealedAll`) on top
+    // so a reveal is scoped to THIS controller instance and can be RESET when
+    // the gallery is dismissed — instead of relying on a session-wide host flag
+    // that stays revealed everywhere until force-quit (the reported bug).
+
+    /// Host's base verdict for an item's stable key, BEFORE this controller's
+    /// view-scoped reveal is applied. `.none` when the host considers the item
+    /// safe / guard-inactive.
+    private let baseOverlayVerdict: (String) -> SensitiveOverlayVerdict
+    /// Host's base disk-persistability for an item's REAL thumbnail.
+    private let baseDiskPersistable: (String) -> Bool
+    /// Host's base "may a reveal affordance be offered for this key" (verified
+    /// adult). The controller additionally suppresses the affordance once the
+    /// key is already revealed in THIS view scope.
+    private let baseCanRevealKey: (String) -> Bool
+    /// Host's base "may a verify-age affordance be offered for this key".
+    private let baseCanVerifyKey: (String) -> Bool
+    /// Host's base per-item reveal hook (defense-in-depth + disk-persistence).
+    private let baseRevealKey: (String) -> Void
+    /// Host's base bulk-reveal hook.
+    private let baseRevealAllAction: () -> Void
+    /// Host's base "is a verified-adult bulk reveal permitted at all" gate. The
+    /// controller consults this before flipping its VIEW-SCOPED reveal-all flag,
+    /// so a minor / undetermined viewer can NEVER punch through even if the
+    /// reveal-all action is somehow invoked (defense in depth). Defaults to the
+    /// guard-active state when a host doesn't pass an explicit gate.
+    private let baseCanRevealAll: () -> Bool
+
     /// Launch the system age-range request; returns the new verified-adult flag.
     public let requestVerification: () async -> Bool
     /// True when the OS SCA policy is on AND no verified-adult bypass is active.
     public let isActive: () -> Bool
+
+    // MARK: View-scoped reveal state (the Bug-1 fix)
+    //
+    // Reveal/reveal-all are tracked HERE, on the controller instance, NOT in a
+    // global host flag. `resetReveals()` clears them when the gallery view that
+    // owns this controller is dismissed, so reopening shows content blurred
+    // again. `@Published` so the gallery re-renders the instant either flips.
+
+    @Published private var viewRevealedKeys: Set<String> = []
+    @Published private var viewRevealedAll = false
 
     /// A no-op controller (guard inactive) for hosts that don't gate the gallery.
     public static let inactive = SensitiveOverlayController(
@@ -466,16 +493,91 @@ public final class SensitiveOverlayController: ObservableObject {
         revealKey: @escaping (String) -> Void,
         revealAllAction: @escaping () -> Void,
         requestVerification: @escaping () async -> Bool,
-        isActive: @escaping () -> Bool
+        isActive: @escaping () -> Bool,
+        canRevealAll: (() -> Bool)? = nil
     ) {
-        self.overlayVerdict = overlayVerdict
-        self.diskPersistable = diskPersistable
-        self.canRevealKey = canRevealKey
-        self.canVerifyKey = canVerifyKey
-        self.revealKey = revealKey
-        self.revealAllAction = revealAllAction
+        self.baseOverlayVerdict = overlayVerdict
+        self.baseDiskPersistable = diskPersistable
+        self.baseCanRevealKey = canRevealKey
+        self.baseCanVerifyKey = canVerifyKey
+        self.baseRevealKey = revealKey
+        self.baseRevealAllAction = revealAllAction
         self.requestVerification = requestVerification
         self.isActive = isActive
+        self.baseCanRevealAll = canRevealAll ?? isActive
+    }
+
+    /// True when `key` has been revealed within THIS controller's view scope
+    /// (either individually or via a view-scoped reveal-all).
+    public func isKeyRevealedInScope(_ key: String) -> Bool {
+        viewRevealedAll || viewRevealedKeys.contains(key)
+    }
+
+    /// Resolve the overlay verdict for an item's stable key. Returns `.none`
+    /// when the guard is inactive, the item is safe, OR it has been revealed in
+    /// THIS view scope (instant un-blur, no rebuild).
+    public func overlayVerdict(_ key: String) -> SensitiveOverlayVerdict {
+        if isKeyRevealedInScope(key) { return .none }
+        return baseOverlayVerdict(key)
+    }
+
+    /// True only when this item's REAL thumbnail is safe to persist to the disk
+    /// thumbnail cache. A sensitive/unanalyzed item returns false; a key revealed
+    /// in this scope becomes persistable (the real pixels are now shown).
+    public func diskPersistable(_ key: String) -> Bool {
+        if isKeyRevealedInScope(key) { return true }
+        return baseDiskPersistable(key)
+    }
+
+    /// Whether a reveal affordance ("Show Anyway") should be offered for `key`
+    /// right now. FALSE once the key is already revealed in this scope (the
+    /// Bug-2 fix: the button must NOT appear on already-revealed content) or
+    /// once the item is no longer shielded.
+    public func canRevealKey(_ key: String) -> Bool {
+        guard !isKeyRevealedInScope(key) else { return false }
+        guard baseOverlayVerdict(key).isShielded else { return false }
+        return baseCanRevealKey(key)
+    }
+
+    /// Whether a "verify age" affordance should be offered for `key`. Suppressed
+    /// once the key is revealed in this scope.
+    public func canVerifyKey(_ key: String) -> Bool {
+        guard !isKeyRevealedInScope(key) else { return false }
+        guard baseOverlayVerdict(key).isShielded else { return false }
+        return baseCanVerifyKey(key)
+    }
+
+    /// Per-item reveal ("Show Anyway"), verified-adult only. Records the reveal
+    /// in THIS view scope and forwards to the host hook (disk-persistence /
+    /// defense-in-depth). A no-op if the host won't allow a reveal for the key.
+    public func revealKey(_ key: String) {
+        guard baseCanRevealKey(key) else { return }
+        baseRevealKey(key)
+        viewRevealedKeys.insert(key)
+    }
+
+    /// Bulk reveal — a verified adult unblocks every flagged item in THIS view
+    /// scope at once. Scoped to this controller and cleared by `resetReveals()`
+    /// on dismiss (NOT a permanent session-wide flag). Forwards to the host hook
+    /// too. A structural no-op for anyone who isn't a verified adult.
+    public func revealAllAction() {
+        // Defense in depth: only flip the VIEW-SCOPED reveal-all flag when the
+        // host confirms a bulk reveal is permitted (verified adult). A minor /
+        // undetermined viewer can never punch through even if this is invoked.
+        // The host hook still runs so the host can record/telemeter the attempt.
+        baseRevealAllAction()
+        guard baseCanRevealAll() else { return }
+        viewRevealedAll = true
+    }
+
+    /// Clear ALL view-scoped reveals (per-item + reveal-all). The gallery calls
+    /// this when it is dismissed so reopening shows content blurred again — the
+    /// Bug-1 fix turning "revealed everywhere until force-quit" into "scoped to
+    /// this view, reset on dismiss". Does NOT touch host policy state.
+    public func resetReveals() {
+        guard viewRevealedAll || !viewRevealedKeys.isEmpty else { return }
+        viewRevealedAll = false
+        viewRevealedKeys.removeAll()
     }
 
     /// Re-publish so the gallery re-renders (host calls this after reveal/verify

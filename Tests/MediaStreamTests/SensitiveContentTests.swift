@@ -275,6 +275,108 @@ final class SensitiveContentTests: XCTestCase {
         XCTAssertEqual(c.overlayVerdict("img"), .none, "Reveal removes the overlay (instant, no rebuild)")
         XCTAssertTrue(c.diskPersistable("img"), "Once revealed the real thumbnail may persist")
     }
+
+    // MARK: View-scoped reveal + reset-on-dismiss (Bug 1) and revealed-button (Bug 2)
+
+    /// Build a controller whose BASE state always shields adult-revealable keys,
+    /// so the controller's OWN view-scoped reveal is what un-blurs (mirrors the
+    /// gallery wiring: the host verdict stays sensitive; the view scope reveals).
+    @MainActor
+    private func adultShieldingController() -> SensitiveOverlayController {
+        SensitiveOverlayController(
+            overlayVerdict: { _ in .shielded(isError: false) },
+            diskPersistable: { _ in false },
+            canRevealKey: { _ in true },
+            canVerifyKey: { _ in false },
+            revealKey: { _ in },
+            revealAllAction: {},
+            requestVerification: { false },
+            isActive: { true },
+            canRevealAll: { true }
+        )
+    }
+
+    @MainActor
+    func testRevealAllIsScopedToControllerAndResetsOnDismiss() {
+        let c = adultShieldingController()
+        XCTAssertEqual(c.overlayVerdict("a"), .shielded(isError: false))
+        XCTAssertEqual(c.overlayVerdict("b"), .shielded(isError: false))
+        c.revealAllAction()
+        // Reveal-All un-blurs EVERY key in THIS scope…
+        XCTAssertEqual(c.overlayVerdict("a"), .none)
+        XCTAssertEqual(c.overlayVerdict("b"), .none)
+        // …but it is VIEW-SCOPED: dismissing (resetReveals) re-blurs everything,
+        // instead of staying revealed everywhere until force-quit (Bug 1).
+        c.resetReveals()
+        XCTAssertEqual(c.overlayVerdict("a"), .shielded(isError: false))
+        XCTAssertEqual(c.overlayVerdict("b"), .shielded(isError: false))
+    }
+
+    @MainActor
+    func testPerItemRevealIsScopedAndResets() {
+        let c = adultShieldingController()
+        c.revealKey("a")
+        XCTAssertEqual(c.overlayVerdict("a"), .none, "Revealed key un-blurs")
+        XCTAssertEqual(c.overlayVerdict("b"), .shielded(isError: false), "Other keys stay blurred")
+        c.resetReveals()
+        XCTAssertEqual(c.overlayVerdict("a"), .shielded(isError: false), "Reset re-blurs the revealed key")
+    }
+
+    @MainActor
+    func testRevealButtonSuppressedOnAlreadyRevealedContent() {
+        let c = adultShieldingController()
+        XCTAssertTrue(c.canRevealKey("a"), "Shielded adult-revealable key offers the button")
+        c.revealKey("a")
+        // Bug 2: once revealed, the per-item reveal control must NOT show again.
+        XCTAssertFalse(c.canRevealKey("a"), "Revealed key must not offer Show Anyway again")
+        XCTAssertFalse(c.canVerifyKey("a"))
+    }
+
+    @MainActor
+    func testRevealAllSuppressesEveryPerItemButton() {
+        let c = adultShieldingController()
+        c.revealAllAction()
+        XCTAssertFalse(c.canRevealKey("a"))
+        XCTAssertFalse(c.canRevealKey("b"))
+    }
+
+    @MainActor
+    func testMinorCannotPunchThroughRevealAll() {
+        // A minor: base shields, but canRevealAll is FALSE. revealAllAction must
+        // be a structural no-op so the view scope never un-blurs.
+        let c = SensitiveOverlayController(
+            overlayVerdict: { _ in .shielded(isError: false) },
+            diskPersistable: { _ in false },
+            canRevealKey: { _ in false },
+            canVerifyKey: { _ in false },
+            revealKey: { _ in },
+            revealAllAction: {},
+            requestVerification: { false },
+            isActive: { true },
+            canRevealAll: { false }
+        )
+        c.revealAllAction()
+        XCTAssertEqual(c.overlayVerdict("a"), .shielded(isError: false),
+                       "A minor must never punch through reveal-all")
+        XCTAssertFalse(c.canRevealKey("a"))
+    }
+
+    @MainActor
+    func testCanRevealKeySuppressedWhenNotShielded() {
+        // A safe (base .none) key never offers a reveal button even if the host
+        // would otherwise allow reveals.
+        let c = SensitiveOverlayController(
+            overlayVerdict: { _ in .none },
+            diskPersistable: { _ in true },
+            canRevealKey: { _ in true },
+            canVerifyKey: { _ in false },
+            revealKey: { _ in },
+            revealAllAction: {},
+            requestVerification: { false },
+            isActive: { true }
+        )
+        XCTAssertFalse(c.canRevealKey("safe"), "A non-shielded key must not offer a reveal control")
+    }
 }
 
 /// Minimal in-memory policy exercising the bulk-reveal contract shared by

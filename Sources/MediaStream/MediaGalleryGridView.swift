@@ -211,6 +211,10 @@ public struct MediaGalleryGridView: View {
     @State private var isRefreshing = false
     @State private var refreshID = UUID()  // Changes to force thumbnail reload
 
+    /// Observe the sensitive overlay controller so the bulk-block + Reveal-All
+    /// re-render the instant a verified adult reveals (and reset on dismiss).
+    @ObservedObject private var observedOverlay: SensitiveOverlayController
+
     /// Number of items to preload around visible area
     private let preloadBuffer = 6
 
@@ -238,6 +242,7 @@ public struct MediaGalleryGridView: View {
         self.onFilterChange = nil
         self.onDismiss = onDismiss
         _selectedFilter = State(initialValue: initialFilter)
+        self.observedOverlay = configuration.sensitiveOverlay ?? .inactive
     }
 
     /// New init with filter callback for respecting grid filters in MediaGalleryView
@@ -266,6 +271,27 @@ public struct MediaGalleryGridView: View {
         self.onFilterChange = onFilterChange
         self.onDismiss = onDismiss
         _selectedFilter = State(initialValue: initialFilter)
+        self.observedOverlay = configuration.sensitiveOverlay ?? .inactive
+    }
+
+    /// Stable sensitive keys for the currently filtered items (nil-filtered).
+    private var sensitiveKeys: [String] {
+        filteredItems.compactMap { ($0 as? SensitiveOverlayItem)?.sensitiveOverlayKey }
+    }
+
+    /// Count of filtered items whose key is still shielded right now.
+    private var shieldedCount: Int {
+        guard let overlay = configuration.sensitiveOverlay, overlay.isActive() else { return 0 }
+        return sensitiveKeys.filter { overlay.overlayVerdict($0).isShielded }.count
+    }
+
+    /// Whether the WHOLE grid should be covered by one bulk block + Reveal-All
+    /// (a majority/threshold of items are still shielded). Driven by the shared
+    /// `SensitiveBulkPolicy` so it matches the conversation block threshold.
+    private var shouldBulkBlock: Bool {
+        guard configuration.sensitiveOverlay?.isActive() == true else { return false }
+        return SensitiveBulkPolicy.shouldBulkBlock(
+            sensitiveCount: shieldedCount, totalCount: filteredItems.count)
     }
 
     private var gridColumns: [GridItem] {
@@ -364,6 +390,15 @@ public struct MediaGalleryGridView: View {
                     multiSelectToolbar
                 }
             }
+
+            // BULK BLOCK (the Bug-4 fix): when a majority of items are still
+            // shielded, ONE block covers the grid with a single Reveal-All.
+            // Crucially a DONE control is layered ON TOP of the block so the
+            // user (including a minor who can NEVER reveal) can always leave the
+            // gallery. The block's touch-absorber does NOT cover the Done chip.
+            if shouldBulkBlock {
+                bulkBlockOverlay
+            }
         }
         #if os(iOS)
         .navigationTitle(isMultiSelectMode ? "\(selectedItems.count) Selected" : "Media Gallery")
@@ -450,10 +485,74 @@ public struct MediaGalleryGridView: View {
             // Clear visible items tracking when view disappears
             visibleItemIds.removeAll()
             loadingItemIds.removeAll()
+            // RESET view-scoped reveals (Bug-1 fix): a reveal/Reveal-All done in
+            // this gallery must NOT persist after dismissal — reopening shows
+            // content blurred again.
+            configuration.sensitiveOverlay?.resetReveals()
         }
         .onChange(of: selectedFilter) { _, _ in
             applyFilters()
         }
+    }
+
+    /// Full-grid sensitive block with a single Reveal-All AND an always-on-top
+    /// Done control. The block visuals + touch-absorber sit BELOW the Done chip
+    /// in the ZStack so the dismiss affordance is never captured — the user can
+    /// always leave even without revealing (essential for minors, who get no
+    /// Reveal-All button at all). The Reveal-All button is adult-gated by the
+    /// controller (`canRevealKey`), so a minor sees the block + Done only.
+    private var bulkBlockOverlay: some View {
+        let overlay = configuration.sensitiveOverlay ?? .inactive
+        let canReveal = sensitiveKeys.contains { overlay.canRevealKey($0) }
+        return ZStack {
+            // Visual blur + scrim. Hit-testing on the absorber catches stray
+            // taps on the hidden grid, but the Done chip drawn AFTER this in the
+            // ZStack stays hittable on top.
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+            Rectangle().fill(Color.black.opacity(0.05)).ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {}
+                .accessibilityIdentifier("sca.bulk.absorber")
+
+            VStack(spacing: 14) {
+                Image(systemName: "eye.slash.fill")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("Sensitive Content")
+                    .font(.headline)
+                Text(canReveal
+                     ? "This gallery contains sensitive media. Tap Reveal All to view it."
+                     : "This gallery contains sensitive media and can't be revealed on this account.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                if canReveal {
+                    Button {
+                        overlay.revealAllAction()
+                    } label: {
+                        Label("Reveal All", systemImage: "eye.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("sca.bulk.revealAll")
+                }
+            }
+            .padding(20)
+
+            // Always-reachable Done — ON TOP of the block so it is never
+            // captured by the touch-absorber (the Bug-4 fix).
+            VStack {
+                HStack {
+                    Spacer()
+                    Button("Done") { onDismiss() }
+                        .buttonStyle(.borderedProminent)
+                        .padding()
+                        .accessibilityIdentifier("sca.bulk.done")
+                }
+                Spacer()
+            }
+        }
+        .transition(.opacity)
     }
 
     private var multiSelectToolbar: some View {
@@ -999,6 +1098,7 @@ struct LazyThumbnailView: View {
     @State private var isLoading = false
     @State private var hasAppeared = false
     @State private var loadTask: Task<Void, Never>? = nil
+    @State private var isRequestingVerification = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -1045,6 +1145,17 @@ struct LazyThumbnailView: View {
                 // rebuild, no cache dependency.
                 .sensitiveBlurOverlay(overlayVerdict, cornerRadius: 8,
                                       compact: geometry.size.width < 120)
+                // PER-ITEM SHIELD CONTROL: when this cell is shielded AND a
+                // reveal/verify affordance is permitted for the key, draw a
+                // single-tap control over the blur. Once revealed the verdict
+                // flips to `.none` (controller publishes) and this overlay is no
+                // longer shown — so the button never appears on revealed content.
+                .overlay {
+                    if overlayVerdict.isShielded, let key = sensitiveKey,
+                       let overlay = sensitiveOverlay, geometry.size.width >= 70 {
+                        sensitiveRevealControl(key: key, overlay: overlay)
+                    }
+                }
                 .overlay(
                     Group {
                         if showSelection {
@@ -1124,6 +1235,21 @@ struct LazyThumbnailView: View {
             }
         }
         .aspectRatio(1, contentMode: .fit)
+        // Expose the per-cell shielded/revealed state to XCUITest as a SEPARATE
+        // hidden leaf (not an `.accessibilityElement` on the whole cell — that
+        // would shadow the reveal button beneath it). The marker's identifier
+        // flips from "shielded" to "revealed" the instant the controller
+        // un-blurs this key, so a test can assert the reveal took visible effect
+        // without pixel-sampling.
+        .overlay {
+            if let key = sensitiveKey {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier(
+                        "sca.cell.\(key).\(overlayVerdict.isShielded ? "shielded" : "revealed")")
+            }
+        }
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
@@ -1136,6 +1262,53 @@ struct LazyThumbnailView: View {
             // thumbnails for a gallery that has already been dismissed.
             loadTask?.cancel()
             loadTask = nil
+        }
+    }
+
+    /// Per-item reveal / verify-age control drawn over a shielded grid cell.
+    /// A SINGLE tap reveals THIS cell's real image (verified adult) or launches
+    /// the age request (undetermined). The button carries a stable accessibility
+    /// identifier so an XCUITest can tap exactly this cell's control and assert
+    /// the reveal took effect.
+    @ViewBuilder
+    private func sensitiveRevealControl(key: String, overlay: SensitiveOverlayController) -> some View {
+        VStack {
+            Spacer()
+            if overlay.canRevealKey(key) {
+                Button {
+                    overlay.revealKey(key)
+                } label: {
+                    Text("Show Anyway")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(.ultraThinMaterial))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("sca.cell.reveal.\(key)")
+                .padding(.bottom, 8)
+            } else if overlay.canVerifyKey(key) {
+                Button {
+                    isRequestingVerification = true
+                    Task {
+                        let verified = await overlay.requestVerification()
+                        isRequestingVerification = false
+                        if verified { overlay.revealAllAction() }
+                    }
+                } label: {
+                    Text(isRequestingVerification ? "…" : "Verify Age")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(.ultraThinMaterial))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .disabled(isRequestingVerification)
+                .accessibilityIdentifier("sca.cell.verify.\(key)")
+                .padding(.bottom, 8)
+            }
         }
     }
 

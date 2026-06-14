@@ -115,6 +115,11 @@ public struct MediaGalleryView: View {
     @State private var currentIndex: Int
     @State private var isSlideshowPlaying = false
     @State private var isZoomed = false
+    @State private var isRequestingSlideshowVerification = false
+
+    /// Observe the sensitive overlay controller so the slideshow reveal button +
+    /// blur re-render the instant a verified adult reveals (and reset on dismiss).
+    @ObservedObject private var observedOverlay: SensitiveOverlayController
 
     /// Clamp an index to the valid range for `count` items. Returns 0 for an
     /// empty collection so the result is never negative (count - 1 would be -1).
@@ -243,6 +248,18 @@ public struct MediaGalleryView: View {
         self.onIndexChange = onIndexChange
         _currentIndex = State(initialValue: Self.clampedIndex(initialIndex, count: mediaItems.count))
         _vrProjectionOverrides = State(initialValue: configuration.initialVRProjectionOverrides)
+        self.observedOverlay = configuration.sensitiveOverlay ?? .inactive
+    }
+
+    /// Stable sensitive key for the currently displayed slideshow item, or nil.
+    private var currentSensitiveKey: String? {
+        (currentItem as? SensitiveOverlayItem)?.sensitiveOverlayKey
+    }
+
+    /// Overlay verdict for the current slideshow item (live as the controller publishes).
+    private var currentOverlayVerdict: SensitiveOverlayVerdict {
+        guard let key = currentSensitiveKey, let overlay = configuration.sensitiveOverlay else { return .none }
+        return overlay.overlayVerdict(key)
     }
 
     public var body: some View {
@@ -526,6 +543,29 @@ public struct MediaGalleryView: View {
                         .padding(.bottom, (mediaItems[safeIndex].type == .video || mediaItems[safeIndex].type == .audio) ? 140 : 20)
                 }
                 .allowsHitTesting(true)
+            }
+
+            // SLIDESHOW REVEAL CONTROL (the Bug-3 fix): a reveal / verify-age
+            // affordance for the shielded full-screen item, pinned to the
+            // VERTICAL CENTER of the screen. The transport controls live at the
+            // BOTTOM, so the reveal button's frame can never intersect them and
+            // both stay independently hittable. Once revealed the verdict flips
+            // to `.none` and this overlay disappears.
+            if currentOverlayVerdict.isShielded, !mediaItems.isEmpty {
+                slideshowRevealOverlay
+            }
+
+            // Flat crop shield-state MARKER (XCUITest): a zero-size, hidden
+            // element carrying the current item's shield state. Kept as its OWN
+            // leaf (NOT a modifier on the root ZStack) so it does not turn the
+            // whole gallery into a single accessibility element and shadow the
+            // reveal button beneath it.
+            if let key = currentSensitiveKey {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityIdentifier(
+                        "sca.slideshow.\(key).\(currentOverlayVerdict.isShielded ? "shielded" : "revealed")")
+                    .allowsHitTesting(false)
             }
 
             // Flat crop projection picker overlay
@@ -821,6 +861,55 @@ public struct MediaGalleryView: View {
             )
             .frame(maxWidth: 260, maxHeight: 420)
         }
+    }
+
+    /// Reveal / verify-age control for a shielded full-screen item. Pinned to
+    /// the VERTICAL CENTER so it never collides with the bottom transport row
+    /// (Bug-3). A SINGLE tap reveals the current item (verified adult) or
+    /// launches the age request (undetermined). Carries a stable accessibility
+    /// identifier so an XCUITest can tap it and assert no overlap with controls.
+    @ViewBuilder
+    private var slideshowRevealOverlay: some View {
+        let overlay = configuration.sensitiveOverlay ?? .inactive
+        let key = currentSensitiveKey ?? ""
+        VStack {
+            Spacer()
+            if overlay.canRevealKey(key) {
+                Button {
+                    overlay.revealKey(key)
+                } label: {
+                    Text("Show Anyway")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(.ultraThinMaterial))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("sca.slideshow.reveal")
+            } else if overlay.canVerifyKey(key) {
+                Button {
+                    isRequestingSlideshowVerification = true
+                    Task {
+                        let verified = await overlay.requestVerification()
+                        isRequestingSlideshowVerification = false
+                        if verified { overlay.revealAllAction() }
+                    }
+                } label: {
+                    Text(isRequestingSlideshowVerification ? "…" : "Verify Age")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(.ultraThinMaterial))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .disabled(isRequestingSlideshowVerification)
+                .accessibilityIdentifier("sca.slideshow.verify")
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var controlsView: some View {
