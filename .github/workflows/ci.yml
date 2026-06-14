@@ -109,6 +109,7 @@ jobs:
         working-directory: Example
         run: |
           set -o pipefail
+          mkdir -p build
           xcodebuild test \
             -project MediaStreamDemo.xcodeproj \
             -scheme MediaStreamDemo \
@@ -118,6 +119,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | tee build/uitest.log
             # NOTE: tee (not tail) — the full log is preserved for inspection.
+            # `mkdir -p build` first so tee can open the log even before
+            # -derivedDataPath creates build/ (otherwise pipefail fails the step
+            # on tee's "No such file or directory" despite a passing test run).
 
   lint:
     name: SwiftLint
