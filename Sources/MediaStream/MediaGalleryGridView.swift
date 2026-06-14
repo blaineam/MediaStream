@@ -215,6 +215,11 @@ public struct MediaGalleryGridView: View {
     /// re-render the instant a verified adult reveals (and reset on dismiss).
     @ObservedObject private var observedOverlay: SensitiveOverlayController
 
+    /// Scene phase — used to RE-GUARD sensitive reveals when the app is
+    /// backgrounded while the gallery stays open (privacy: returning to the
+    /// foreground must show sensitive content blurred again).
+    @Environment(\.scenePhase) private var scenePhase
+
     /// Number of items to preload around visible area
     private let preloadBuffer = 6
 
@@ -418,26 +423,37 @@ public struct MediaGalleryGridView: View {
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 12) {
-                    if isMultiSelectMode {
-                        Button("Select All") {
-                            selectAll()
-                        }
-                        .disabled(selectedItems.count == filteredItems.count)
+                // BULK-BLOCK SINGLE-DONE FIX: while the whole gallery is bulk
+                // blocked (`shouldBulkBlock` — the same gate that presents
+                // `bulkBlockOverlay`), the block overlay renders its OWN
+                // always-reachable "Done" (id "sca.bulk.done"). Suppress the
+                // entire trailing chrome group — the chrome Done, the Download
+                // button, and the Select-mode controls — so there is EXACTLY ONE
+                // Done on screen. A fully-shielded gallery must not allow
+                // download/select of sensitive content anyway, so dropping these
+                // is also the privacy-correct behavior.
+                if !shouldBulkBlock {
+                    HStack(spacing: 12) {
+                        if isMultiSelectMode {
+                            Button("Select All") {
+                                selectAll()
+                            }
+                            .disabled(selectedItems.count == filteredItems.count)
 
-                        Button("Clear") {
-                            clearSelection()
-                        }
-                        .disabled(selectedItems.isEmpty)
-                    } else {
-                        // Download button for local caching
-                        MediaDownloadButton(
-                            mediaItems: mediaItems,
-                            headerProvider: { url in await MediaStreamConfiguration.headersAsync(for: url) }
-                        )
+                            Button("Clear") {
+                                clearSelection()
+                            }
+                            .disabled(selectedItems.isEmpty)
+                        } else {
+                            // Download button for local caching
+                            MediaDownloadButton(
+                                mediaItems: mediaItems,
+                                headerProvider: { url in await MediaStreamConfiguration.headersAsync(for: url) }
+                            )
 
-                        Button("Done") {
-                            onDismiss()
+                            Button("Done") {
+                                onDismiss()
+                            }
                         }
                     }
                 }
@@ -489,6 +505,16 @@ public struct MediaGalleryGridView: View {
             // this gallery must NOT persist after dismissal — reopening shows
             // content blurred again.
             configuration.sensitiveOverlay?.resetReveals()
+        }
+        // BACKGROUND RE-GUARD (privacy): if the app is BACKGROUNDED while this
+        // gallery stays open, drop any view-scoped reveals so returning to the
+        // foreground shows sensitive content blurred again. Gate strictly on
+        // `.background` — NOT `.inactive` (Control Center pull-down / app
+        // switcher peek) — to avoid over-aggressive re-blurring.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                configuration.sensitiveOverlay?.resetReveals()
+            }
         }
         .onChange(of: selectedFilter) { _, _ in
             applyFilters()

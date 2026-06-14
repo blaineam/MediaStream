@@ -191,6 +191,10 @@ public struct MediaGalleryView: View {
     /// Manual VR projection override — keyed by item index. Allows treating any video as VR.
     @State private var vrProjectionOverrides: [Int: VRProjection]
     @FocusState private var isFocused: Bool
+
+    /// Scene phase — RE-GUARDS sensitive reveals when the app is backgrounded
+    /// while the slideshow stays open (privacy: foregrounding must re-blur).
+    @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     /// Local NSEvent keyDown monitor for arrow/space navigation. SwiftUI's
     /// onKeyPress needs focus that sheets/windows don't reliably grant on
@@ -698,6 +702,16 @@ public struct MediaGalleryView: View {
             #if os(iOS)
             UIApplication.shared.isIdleTimerDisabled = false
             #endif
+        }
+        // BACKGROUND RE-GUARD (privacy): if the app is BACKGROUNDED while the
+        // slideshow stays open, drop any view-scoped reveals so returning to the
+        // foreground shows sensitive content blurred again. Gate strictly on
+        // `.background` — NOT `.inactive` (Control Center pull-down / app
+        // switcher peek) — to avoid over-aggressive re-blurring.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                configuration.sensitiveOverlay?.resetReveals()
+            }
         }
         #if os(iOS)
         .onKeyPress(.space) {

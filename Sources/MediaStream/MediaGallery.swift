@@ -17,5 +17,5 @@ import Foundation
 
 public struct MediaGallery {
     /// MediaStream release version (matches the git tag / CHANGELOG).
-    public static let version = "2.7.0"
+    public static let version = "2.7.1"
 }

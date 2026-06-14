@@ -2,6 +2,15 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.1] - 2026-06-13
+
+### Fixed (sensitive-content gallery)
+- **Duplicate "Done" when the gallery is fully blocked**: when the bulk block covers the whole gallery, the navigation-toolbar trailing group (the chrome `Done`, the `MediaDownloadButton`, and the multi-select controls) is now **suppressed** — gated on `shouldBulkBlock`, the same condition that presents `bulkBlockOverlay`. The block overlay's own always-reachable `Done` (id `sca.bulk.done`) is the ONLY visible Done, eliminating the two overlapping Done buttons at the top-right. A fully-shielded gallery also no longer offers download/select of sensitive content.
+- **Reveal survived backgrounding the app**: both `MediaGalleryGridView` and the slideshow `MediaGalleryView` now observe `@Environment(\.scenePhase)` and call `SensitiveOverlayController.resetReveals()` when the phase becomes `.background`, so a per-item reveal or Reveal-All is dropped when the app is backgrounded while the gallery stays open — returning to the foreground shows sensitive content blurred again. The re-guard is gated strictly on `.background` (not the transient `.inactive` from a Control Center pull-down / app-switcher peek) to avoid over-aggressive re-blurring.
+
+### Tests
+- Added `testBulkBlockShowsExactlyOneDone` (asserts exactly one `Done` and no `Download` while fully blocked, and that the single Done dismisses), `testGridRevealReGuardsAfterBackgrounding`, and `testSlideshowRevealReGuardsAfterBackgrounding` (reveal → `XCUIDevice.shared.press(.home)` → `app.activate()` → assert re-shielded) to `MediaStreamSCAUITests`. Hardened the pre-existing slideshow/reset tests against the simulator's intermittent sign-in sheet stealing focus mid-tap.
+
 ## [2.7.0] - 2026-06-13
 
 ### Added

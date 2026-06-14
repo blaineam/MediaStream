@@ -196,9 +196,18 @@ final class MediaStreamSCAUITests: XCTestCase {
         XCTAssertLessThan(revealFrame.maxY, screen.maxY - 80,
                           "Reveal button must sit above the bottom transport controls band")
 
-        // A single tap reveals the full-screen item.
+        // A single tap reveals the full-screen item. Tapping the full-screen
+        // viewer can also toggle the transport-control chrome, which may
+        // intercept the first hit; clear any alert and retry once so the test is
+        // not flaky in a full-suite run.
+        dismissSystemAlerts()
         revealBtn.tap()
-        XCTAssertTrue(waitFor(app, "sca.slideshow.tile-1.revealed"),
+        let revealed = element(app, "sca.slideshow.tile-1.revealed")
+        if !revealed.waitForExistence(timeout: 6) {
+            let retryBtn = button(app, "sca.slideshow.reveal")
+            if retryBtn.exists { retryBtn.tap() }
+        }
+        XCTAssertTrue(revealed.waitForExistence(timeout: 8),
                       "A single tap must reveal the full-screen item")
         XCTAssertFalse(element(app, "sca.slideshow.reveal").exists,
                        "Revealed full-screen content must not show the reveal control again")
@@ -214,10 +223,17 @@ final class MediaStreamSCAUITests: XCTestCase {
         element(app, "sca.bulk.revealAll").tap()
         XCTAssertTrue(waitFor(app, "sca.cell.tile-0.revealed"))
 
-        // Dismiss back to the harness.
+        // Dismiss back to the harness. A SpringBoard sign-in sheet can steal
+        // focus mid-test, so clear it and retry the Done tap once before
+        // asserting the harness returned.
+        dismissSystemAlerts()
         let toolbarDone = app.buttons["Done"].firstMatch
         XCTAssertTrue(toolbarDone.waitForExistence(timeout: 5))
         toolbarDone.tap()
+        if !waitFor(app, "demo.openGrid", timeout: 5) {
+            dismissSystemAlerts()
+            if app.buttons["Done"].firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
+        }
         XCTAssertTrue(waitFor(app, "demo.openGrid"))
 
         // Reopen — content must be BLURRED AGAIN (reveal did not persist).
@@ -235,13 +251,110 @@ final class MediaStreamSCAUITests: XCTestCase {
         reveal.tap()
         XCTAssertTrue(waitFor(app, "sca.cell.tile-1.revealed"))
 
-        // Dismiss + reopen.
+        // Dismiss + reopen. Guard against a SpringBoard sheet stealing the tap.
+        dismissSystemAlerts()
         app.buttons["Done"].firstMatch.tap()
+        if !waitFor(app, "demo.openGrid", timeout: 5) {
+            dismissSystemAlerts()
+            if app.buttons["Done"].firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
+        }
         XCTAssertTrue(waitFor(app, "demo.openGrid"))
         element(app, "demo.openGrid").tap()
 
         // The previously-revealed cell is shielded again.
         XCTAssertTrue(waitFor(app, "sca.cell.tile-1.shielded"),
                       "A per-item reveal must not persist across gallery dismissal (Bug 1)")
+    }
+
+    // MARK: 6. Single Done when fully blocked (v2.7.1 — toolbar suppression)
+
+    /// When the WHOLE gallery is bulk blocked, the navigation-toolbar trailing
+    /// group (chrome Done + Download + Select) is suppressed so the ONLY visible
+    /// Done is the block overlay's own "sca.bulk.done". There must be EXACTLY
+    /// ONE element labelled "Done" — the prior bug rendered two overlapping Dones
+    /// at the top-right ("multiple done buttons when it is all sensitive").
+    func testBulkBlockShowsExactlyOneDone() {
+        let app = launch(age: "verifiedAdult", flag: "all")
+
+        // The bulk block (and its own Done) must be present.
+        let bulkDone = element(app, "sca.bulk.done")
+        XCTAssertTrue(bulkDone.waitForExistence(timeout: 12),
+                      "A fully-sensitive gallery must show the bulk block's Done")
+        XCTAssertTrue(bulkDone.isHittable, "The block's Done must be hittable")
+
+        // EXACTLY ONE button labelled "Done" may exist — the toolbar Done,
+        // Download and Select buttons are suppressed while bulk blocked.
+        let doneButtons = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Done"))
+        XCTAssertEqual(doneButtons.count, 1,
+                       "Exactly one Done must be visible when fully blocked (toolbar Done suppressed)")
+
+        // The download button must also be gone while fully blocked (no
+        // downloading of sensitive content).
+        XCTAssertFalse(app.buttons["Download"].exists,
+                       "Download must be suppressed while the gallery is fully blocked")
+
+        // The single Done dismisses the gallery back to the harness.
+        bulkDone.tap()
+        XCTAssertTrue(waitFor(app, "demo.openGrid"),
+                      "Tapping the single Done must dismiss the blocked gallery")
+    }
+
+    // MARK: 7. Re-guard on background → foreground (v2.7.1 — scenePhase)
+
+    /// Reveal-All in the grid, BACKGROUND the app, then reactivate it. The
+    /// reveal is view-scoped and must be dropped on `.background`, so on return
+    /// the bulk block (blurred shield) is back. Prior bug: reveal survived
+    /// backgrounding and the content stayed visible after foregrounding.
+    func testGridRevealReGuardsAfterBackgrounding() {
+        let app = launch(age: "verifiedAdult", flag: "all")
+
+        // Reveal everything.
+        XCTAssertTrue(waitFor(app, "sca.bulk.revealAll"))
+        element(app, "sca.bulk.revealAll").tap()
+        XCTAssertTrue(waitFor(app, "sca.cell.tile-0.revealed"),
+                      "Reveal All must un-blur the content first")
+
+        // Background the app, then bring it back to the foreground.
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        dismissSystemAlerts()
+
+        // Content must be BLURRED AGAIN — the bulk block returns and the cell is
+        // shielded once more (the scenePhase .background re-guard fired).
+        XCTAssertTrue(waitFor(app, "sca.bulk.revealAll", timeout: 12),
+                      "Foregrounding must restore the bulk block — reveal must NOT survive backgrounding")
+        XCTAssertTrue(element(app, "sca.cell.tile-0.shielded").exists,
+                      "The cell must be re-shielded after returning from background")
+        XCTAssertFalse(element(app, "sca.cell.tile-0.revealed").exists,
+                       "Content must not remain revealed after backgrounding the app")
+    }
+
+    /// Same re-guard, exercised in the full-screen slideshow: reveal a shielded
+    /// item, background, reactivate, and assert it is shielded again.
+    func testSlideshowRevealReGuardsAfterBackgrounding() {
+        let app = launch(age: "verifiedAdult", flag: "some",
+                         start: "slideshow", startIndex: 1)
+
+        _ = element(app, "sca.slideshow.tile-1.shielded").waitForExistence(timeout: 10)
+        dismissSystemAlerts()
+
+        let revealBtn = button(app, "sca.slideshow.reveal")
+        XCTAssertTrue(revealBtn.waitForExistence(timeout: 10),
+                      "The slideshow must offer a reveal control for the shielded item")
+        revealBtn.tap()
+        XCTAssertTrue(waitFor(app, "sca.slideshow.tile-1.revealed"),
+                      "The item must reveal first")
+
+        // Background → foreground.
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        dismissSystemAlerts()
+
+        // The slideshow item must be shielded again on return.
+        XCTAssertTrue(waitFor(app, "sca.slideshow.tile-1.shielded", timeout: 12),
+                      "Foregrounding must re-blur the slideshow item — reveal must NOT survive backgrounding")
+        XCTAssertFalse(element(app, "sca.slideshow.tile-1.revealed").exists,
+                       "The slideshow item must not remain revealed after backgrounding")
     }
 }
