@@ -2286,7 +2286,9 @@ fileprivate struct PreviewMediaItems {
     /// Load an animated GIF from a URL
     static func loadAnimatedGIF(from url: URL) async -> PlatformImage? {
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            // Trust-evaluating session: plain URLSession.shared rejects the
+            // self-signed certs host apps use for their local media servers.
+            let (data, _) = try await MediaStreamConfiguration.trustEvaluatingSession.data(from: url)
             #if canImport(UIKit)
             return UIImage.animatedImageWithAnimatedGIFData(data)
             #elseif canImport(AppKit)

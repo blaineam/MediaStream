@@ -2,6 +2,13 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.7.4] - 2026-07-07
+
+### Fixed (animated images black in the viewer)
+- **Every remote animated image (GIF/APNG/animated WebP) rendered as a black screen in the full-screen viewer while grid thumbnails worked**: the native animated renderer introduced in v2.7.0 (`WebViewAnimatedImageController`, replacing the WKWebView path) downloaded the image with plain `URLSession.shared`, which rejects the self-signed certificates host apps (Enter Space) use for their local HTTPS media servers. The TLS handshake failed before a single byte arrived, the completion handler bailed silently, `currentFrame` stayed nil, and the viewer showed black. Thumbnails kept working because the host app fetches those bytes itself. The controller now uses a shared **trust-evaluating session** (`MediaStreamConfiguration.trustEvaluatingSession`, new) whose delegate consults the host's `serverTrustEvaluator` — the same pattern the video streaming paths (`RCStreamingResourceLoader`, `WebViewVideoPlayer`) already used. Hosts without an evaluator get default certificate handling, so nothing changes for normal HTTPS.
+- **Silent failures in the animated download/decode path now log**: download errors, HTTP ≥400 responses, and `CGImageSourceCreateWithData` failures each print a `[MediaStream]` diagnostic instead of leaving a black view with no trace.
+- `MediaGalleryView.loadAnimatedGIF(from:)` switched to the trust-evaluating session for the same reason.
+
 ## [2.7.3] - 2026-06-14
 
 ### Fixed (sensitive-content gallery — two slideshow navigation defects)

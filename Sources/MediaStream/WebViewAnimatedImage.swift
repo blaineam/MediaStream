@@ -88,13 +88,29 @@ public class WebViewAnimatedImageController: NSObject, ObservableObject {
             request.setValue(h, forHTTPHeaderField: "Authorization")
         }
 
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
-            guard let data = data, error == nil else { return }
+        // MUST use the trust-evaluating session: host apps (Enter Space) serve
+        // media from a self-signed local HTTPS endpoint, and URLSession.shared
+        // fails its TLS handshake — the download died silently and the viewer
+        // stayed black for every remote animated image (thumbnails, fetched by
+        // the host app's own session, kept working).
+        let task = MediaStreamConfiguration.trustEvaluatingSession.dataTask(with: request) { [weak self] data, response, error in
+            if let error = error {
+                print("⚠️ [MediaStream] Animated image download failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                return
+            }
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                print("⚠️ [MediaStream] Animated image download HTTP \(http.statusCode) for \(url.lastPathComponent)")
+                return
+            }
+            guard let data = data else { return }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 // Don't call reset() here — it would clear pendingStart.
                 // loadAnimatedData already handles source setup.
-                guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return }
+                guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                    print("⚠️ [MediaStream] Animated image decode failed (\(data.count) bytes) for \(url.lastPathComponent)")
+                    return
+                }
                 self.setupSource(source)
             }
         }
