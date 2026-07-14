@@ -867,3 +867,56 @@ struct ConcurrencySafetyTests {
         // If this completes without issues, concurrency is handled correctly
     }
 }
+
+// MARK: - Slideshow Configuration Tests
+
+@Suite("Slideshow Configuration Tests")
+struct SlideshowConfigurationTests {
+    @Test("Existing consumers compile and keep their behavior")
+    func sourceCompatibility() {
+        // Pinned shape: a config built from ONLY the pre-existing parameters
+        // must still compile, and the new knobs must default to today's
+        // behavior (loop all, unshuffled, no autostart, no callbacks).
+        let config = MediaGalleryConfiguration(
+            slideshowDuration: 12.0,
+            customActions: [MediaGalleryAction(icon: "heart") { _ in }],
+            onVRProjectionChange: { _, _ in }
+        )
+
+        #expect(config.slideshowDuration == 12.0)
+        #expect(config.slideshowInitialLoopMode == .all)
+        #expect(config.slideshowShuffled == false)
+        #expect(config.slideshowAutoStart == false)
+        #expect(config.onLoopModeChange == nil)
+        #expect(config.onShuffleChange == nil)
+    }
+
+    @Test("Slideshow seeds round-trip through the configuration")
+    func slideshowSeeds() {
+        let config = MediaGalleryConfiguration(
+            slideshowInitialLoopMode: .one,
+            slideshowShuffled: true,
+            slideshowAutoStart: true
+        )
+
+        #expect(config.slideshowInitialLoopMode == .one)
+        #expect(config.slideshowShuffled == true)
+        #expect(config.slideshowAutoStart == true)
+    }
+
+    @Test("Shuffled order covers every index with the current one pinned first")
+    func shuffledOrderIsCoherent() {
+        // A gallery seeded shuffled must get the same bookkeeping toggleShuffle()
+        // builds: a full permutation that starts on the item already on screen.
+        let order = MediaGalleryView.shuffledOrder(count: 10, startingAt: 4)
+
+        #expect(order.count == 10)
+        #expect(order.first == 4)
+        #expect(Set(order) == Set(0..<10))
+    }
+
+    @Test("Shuffled order is empty for an empty collection")
+    func shuffledOrderEmptyCollection() {
+        #expect(MediaGalleryView.shuffledOrder(count: 0, startingAt: 0).isEmpty)
+    }
+}

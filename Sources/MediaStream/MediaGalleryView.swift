@@ -78,6 +78,22 @@ public struct MediaGalleryConfiguration {
     /// overlay and the sharp image is already on screen (no cache rebuild).
     /// Sensitive items are never persisted to the disk thumbnail cache.
     public var sensitiveOverlay: SensitiveOverlayController?
+    /// Loop mode the gallery STARTS in. Seeds the initial value only — the
+    /// in-gallery loop button and the short-clip auto-`.one` rule still take
+    /// over at runtime.
+    public var slideshowInitialLoopMode: LoopMode
+    /// Whether the gallery STARTS shuffled. Seeds the initial value only — the
+    /// in-gallery shuffle button still toggles it at runtime.
+    public var slideshowShuffled: Bool
+    /// Whether the slideshow starts playing as soon as the gallery appears.
+    public var slideshowAutoStart: Bool
+    /// Called when the user changes the loop mode with the in-gallery loop
+    /// button, so the host can persist the choice. NOT called for the seed or
+    /// for the short-clip auto-`.one` rule.
+    public var onLoopModeChange: ((LoopMode) -> Void)?
+    /// Called when the user toggles shuffle with the in-gallery shuffle button,
+    /// so the host can persist the choice. NOT called for the seed.
+    public var onShuffleChange: ((Bool) -> Void)?
 
     public init(
         slideshowDuration: TimeInterval = 5.0,
@@ -86,7 +102,12 @@ public struct MediaGalleryConfiguration {
         customActions: [MediaGalleryAction] = [],
         onVRProjectionChange: ((any MediaItem, VRProjection?) -> Void)? = nil,
         initialVRProjectionOverrides: [Int: VRProjection] = [:],
-        sensitiveOverlay: SensitiveOverlayController? = nil
+        sensitiveOverlay: SensitiveOverlayController? = nil,
+        slideshowInitialLoopMode: LoopMode = .all,
+        slideshowShuffled: Bool = false,
+        slideshowAutoStart: Bool = false,
+        onLoopModeChange: ((LoopMode) -> Void)? = nil,
+        onShuffleChange: ((Bool) -> Void)? = nil
     ) {
         self.slideshowDuration = slideshowDuration
         self.showControls = showControls
@@ -95,6 +116,11 @@ public struct MediaGalleryConfiguration {
         self.onVRProjectionChange = onVRProjectionChange
         self.initialVRProjectionOverrides = initialVRProjectionOverrides
         self.sensitiveOverlay = sensitiveOverlay
+        self.slideshowInitialLoopMode = slideshowInitialLoopMode
+        self.slideshowShuffled = slideshowShuffled
+        self.slideshowAutoStart = slideshowAutoStart
+        self.onLoopModeChange = onLoopModeChange
+        self.onShuffleChange = onShuffleChange
     }
 }
 
@@ -185,6 +211,9 @@ public struct MediaGalleryView: View {
     @State private var isFullscreen = false
     @State private var loopMode: LoopMode = .all
     @State private var autoLoopApplied = false
+    /// Guards `slideshowAutoStart` so it fires once per gallery, not on every
+    /// re-appear (returning from the fullscreen cover re-runs `.onAppear`).
+    @State private var autoStartApplied = false
     @State private var isShuffled = false
     @State private var shuffledIndices: [Int] = []
     @State private var shuffledPosition: Int = 0  // Current position in shuffled order
@@ -250,9 +279,35 @@ public struct MediaGalleryView: View {
         self.onDismiss = onDismiss
         self.onBackToGrid = onBackToGrid
         self.onIndexChange = onIndexChange
-        _currentIndex = State(initialValue: Self.clampedIndex(initialIndex, count: mediaItems.count))
+        let startIndex = Self.clampedIndex(initialIndex, count: mediaItems.count)
+        _currentIndex = State(initialValue: startIndex)
         _vrProjectionOverrides = State(initialValue: configuration.initialVRProjectionOverrides)
+        // Seed the slideshow's transport state from the host's configuration.
+        // These are INITIAL values: the in-gallery buttons and the short-clip
+        // auto-`.one` rule still own the state once the gallery is running.
+        _loopMode = State(initialValue: configuration.slideshowInitialLoopMode)
+        _isShuffled = State(initialValue: configuration.slideshowShuffled)
+        // A gallery that STARTS shuffled needs the same index bookkeeping
+        // `toggleShuffle()` builds, or next/previous would walk an empty order.
+        _shuffledIndices = State(
+            initialValue: configuration.slideshowShuffled
+                ? Self.shuffledOrder(count: mediaItems.count, startingAt: startIndex)
+                : []
+        )
+        _shuffledPosition = State(initialValue: 0)
         self.observedOverlay = configuration.sensitiveOverlay ?? .inactive
+    }
+
+    /// A shuffled walk over `count` items with `startIndex` pinned to the front,
+    /// so shuffling never jumps away from the item that's already on screen.
+    static func shuffledOrder(count: Int, startingAt startIndex: Int) -> [Int] {
+        guard count > 0 else { return [] }
+        var order = Array(0..<count).shuffled()
+        if let pos = order.firstIndex(of: startIndex) {
+            order.remove(at: pos)
+            order.insert(startIndex, at: 0)
+        }
+        return order
     }
 
     /// Stable sensitive key for the currently displayed slideshow item, or nil.
@@ -394,6 +449,16 @@ public struct MediaGalleryView: View {
                 if clamped != currentIndex {
                     currentIndex = clamped
                 }
+            }
+            .onChange(of: configuration.slideshowDuration) { _, _ in
+                // The host moved its own interval picker. Drop the in-gallery
+                // override so the host's new value actually takes effect —
+                // otherwise one use of the play-button context menu would
+                // shadow the host for the rest of the gallery's life. The menu
+                // keeps its intent: the override still wins until the host
+                // changes the value again.
+                guard customSlideshowDuration != nil else { return }
+                customSlideshowDuration = nil
             }
             .onChange(of: playbackService.currentIndex) { _, newServiceIndex in
                 // Sync local index when playback service changes (e.g., from lock screen controls)
@@ -721,6 +786,15 @@ public struct MediaGalleryView: View {
             loadCaption()
             scheduleHideControls()
             setupPlaybackService()
+            // Push the seeded transport state onto the playback service — the
+            // state itself is seeded in init, but the service is a shared
+            // singleton that only learns about it here.
+            syncLoopModeToService()
+            syncShuffleToService()
+            if configuration.slideshowAutoStart && !autoStartApplied {
+                autoStartApplied = true
+                startSlideshow()
+            }
         }
         #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.shouldPauseForBackgroundNotification)) { _ in
@@ -1244,12 +1318,7 @@ public struct MediaGalleryView: View {
         isShuffled.toggle()
         if isShuffled {
             // Create shuffled indices starting from current position
-            shuffledIndices = Array(0..<mediaItems.count).shuffled()
-            // Find current index in shuffled array and move to front
-            if let pos = shuffledIndices.firstIndex(of: currentIndex) {
-                shuffledIndices.remove(at: pos)
-                shuffledIndices.insert(currentIndex, at: 0)
-            }
+            shuffledIndices = Self.shuffledOrder(count: mediaItems.count, startingAt: currentIndex)
             shuffledPosition = 0
         } else {
             shuffledIndices = []
@@ -1257,12 +1326,16 @@ public struct MediaGalleryView: View {
         }
         // Sync with playback service
         playbackService.toggleShuffle()
+        // Let the host persist the user's choice
+        configuration.onShuffleChange?(isShuffled)
     }
 
     private func cycleLoopMode() {
         loopMode = loopMode.next()
         // Sync with playback service
         syncLoopModeToService()
+        // Let the host persist the user's choice
+        configuration.onLoopModeChange?(loopMode)
     }
 
     /// Re-shuffle indices for next loop iteration (doesn't start with current)
@@ -1333,6 +1406,14 @@ public struct MediaGalleryView: View {
         case .one: serviceMode = .one
         }
         playbackService.loopMode = serviceMode
+    }
+
+    /// Sync local shuffle state to the playback service. The service only
+    /// exposes a *toggle*, so drive it to the value we hold rather than
+    /// flipping it blind.
+    private func syncShuffleToService() {
+        guard playbackService.isShuffled != isShuffled else { return }
+        playbackService.toggleShuffle()
     }
 
     private func captionView(caption: String) -> some View {

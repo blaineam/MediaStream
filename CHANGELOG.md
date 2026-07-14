@@ -2,6 +2,22 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added (host-settable slideshow configuration)
+- **A host app could not seed or persist the slideshow's transport state**: `slideshowDuration` was the ONLY host-settable slideshow knob — loop mode, shuffle, and play/pause were private `@State` on `MediaGalleryView` with no configuration field and no way in. A host offering its own slideshow preferences could set the interval but not the loop mode or shuffle, and could not persist what the user picked with the in-gallery buttons. `MediaGalleryConfiguration` gains five **additive, defaulted** members that preserve today's behavior exactly:
+  - `slideshowInitialLoopMode: LoopMode = .all` — seeds `loopMode`.
+  - `slideshowShuffled: Bool = false` — seeds `isShuffled` **and** its index bookkeeping (`shuffledIndices` / `shuffledPosition`), so a gallery that starts shuffled walks a full permutation pinned to the item already on screen instead of an empty order. The shuffled-order construction is now shared between the seed and `toggleShuffle()` (`MediaGalleryView.shuffledOrder(count:startingAt:)`).
+  - `slideshowAutoStart: Bool = false` — starts the slideshow when the gallery appears, once per gallery (returning from the fullscreen cover re-runs `.onAppear` and must not restart it).
+  - `onLoopModeChange: ((LoopMode) -> Void)?` and `onShuffleChange: ((Bool) -> Void)?` — fire from `cycleLoopMode()` / `toggleShuffle()` so the host can persist the user's choice, following the existing `onIndexChange` / `onVRProjectionChange` convention.
+- **Seeds are INITIAL values, not overrides.** The short-clip rule (`onVRDurationKnown` / `playbackService.duration` forcing `.one` for media under 120s, guarded by `autoLoopApplied`) is untouched and still wins over a seeded loop mode on first play, exactly as it did over the old `.all` default. The seeded loop/shuffle state is pushed onto the shared `MediaPlaybackService` in `.onAppear` via `syncLoopModeToService()` and a new `syncShuffleToService()` — the latter drives the service's *toggle*-only shuffle API to the value held rather than flipping it blind.
+
+### Changed
+- **A host-side slideshow interval is no longer permanently shadowed by the in-gallery menu**: the play button's duration context menu sets a view-local `customSlideshowDuration` that overrode `configuration.slideshowDuration` for the rest of the gallery's life, with no way for the host to read or reset it — so once the user touched the menu, a host's own interval picker did nothing. Changing `configuration.slideshowDuration` now clears the override. The menu keeps its intent: the override still wins until the host changes the value again.
+
+### Tests
+- Added `SlideshowConfigurationTests`: source compatibility (a config built from ONLY the pre-existing parameters compiles, and the new knobs default to today's behavior), seed round-tripping, and `shuffledOrder(count:startingAt:)` coherence (full permutation, current index first, empty collection safe). All existing tests stay green.
+
 ## [2.7.4] - 2026-07-07
 
 ### Fixed (animated images black in the viewer)

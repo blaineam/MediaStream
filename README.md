@@ -542,6 +542,35 @@ MediaGalleryView(
 )
 ```
 
+#### Host-owned slideshow state (v2.8.0)
+
+The gallery owns the slideshow at runtime, but the host can seed what it starts
+as and persist what the user picks with the in-gallery buttons:
+
+```swift
+let config = MediaGalleryConfiguration(
+    slideshowDuration: interval,        // Re-read before every slide
+    slideshowInitialLoopMode: savedLoopMode,  // Seeds the loop button (.all by default)
+    slideshowShuffled: savedShuffle,          // Seeds the shuffle button (false by default)
+    slideshowAutoStart: true,                 // Play as soon as the gallery appears
+    onLoopModeChange: { mode in saveLoopMode(mode) },
+    onShuffleChange: { shuffled in saveShuffle(shuffled) }
+)
+```
+
+- The three `slideshow*` seeds are **initial values only**. The in-gallery
+  shuffle/loop buttons still own the state once the gallery is running, and the
+  short-clip rule (a video/VR item under 120s forces `.one` on first play) still
+  wins over a seeded loop mode exactly as it does today.
+- `onLoopModeChange` / `onShuffleChange` fire **only** for the user's in-gallery
+  button presses — never for the seed, and never for the short-clip auto-`.one`
+  rule — so a host that writes them straight back to storage records only
+  deliberate choices.
+- The play button's duration context menu still overrides `slideshowDuration`
+  for the gallery's lifetime, but changing `slideshowDuration` from the host now
+  **clears that override**, so a host-side interval picker is never permanently
+  shadowed by one use of the menu.
+
 ### 5. Custom Filtering and Sorting
 
 ```swift
@@ -965,6 +994,11 @@ public struct MediaGalleryConfiguration {
     public var showControls: Bool = true
     public var backgroundColor: Color = .black
     public var customActions: [MediaGalleryAction] = []
+    public var slideshowInitialLoopMode: LoopMode = .all
+    public var slideshowShuffled: Bool = false
+    public var slideshowAutoStart: Bool = false
+    public var onLoopModeChange: ((LoopMode) -> Void)?
+    public var onShuffleChange: ((Bool) -> Void)?
 }
 ```
 
