@@ -2,7 +2,7 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.8.0] - 2026-07-14
 
 ### Added (host-settable slideshow configuration)
 - **A host app could not seed or persist the slideshow's transport state**: `slideshowDuration` was the ONLY host-settable slideshow knob — loop mode, shuffle, and play/pause were private `@State` on `MediaGalleryView` with no configuration field and no way in. A host offering its own slideshow preferences could set the interval but not the loop mode or shuffle, and could not persist what the user picked with the in-gallery buttons. `MediaGalleryConfiguration` gains five **additive, defaulted** members that preserve today's behavior exactly:
