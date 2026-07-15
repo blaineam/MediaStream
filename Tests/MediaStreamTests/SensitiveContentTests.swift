@@ -440,6 +440,82 @@ final class SensitiveContentTests: XCTestCase {
             c.shouldBulkBlock(forKeys: keys, totalCount: 12),
             "After Reveal-All the gate must drop so the block disappears")
     }
+
+    // MARK: Export gate (Share must never hand out a shielded item's original)
+
+    /// A shielded item never exports — the whole point of the gate. Sharing
+    /// hands over the real original, which is strictly worse than un-blurring.
+    func testShieldedNeverExports() {
+        XCTAssertFalse(SensitiveExportPolicy.allowsExport(.shielded(isError: false)))
+        XCTAssertFalse(SensitiveExportPolicy.allowsExport(.shielded(isError: true)),
+                       "The fail-closed error shield must block export too")
+    }
+
+    /// `.none` — safe, revealed in scope, or guard inactive — exports normally.
+    func testUnshieldedExports() {
+        XCTAssertTrue(SensitiveExportPolicy.allowsExport(.none))
+    }
+
+    /// A mixed multi-select shares ONLY the allowed items rather than blocking
+    /// the whole batch — and the shielded ones must not survive the filter.
+    func testExportableDropsShieldedFromMixedSelection() {
+        let items: [(String, SensitiveOverlayVerdict)] = [
+            ("safe-1", .none),
+            ("nsfw-1", .shielded(isError: false)),
+            ("safe-2", .none),
+            ("err-1", .shielded(isError: true))
+        ]
+        let out = SensitiveExportPolicy.exportable(items) { $0.1 }
+        XCTAssertEqual(out.map(\.0), ["safe-1", "safe-2"],
+                       "Only unshielded items may leave the app")
+    }
+
+    /// Every-item-shielded selection: no Share affordance (dead end), and the
+    /// filter yields nothing even if the button were somehow reached.
+    func testFullyShieldedSelectionOffersNoShare() {
+        let verdicts: [SensitiveOverlayVerdict] = [
+            .shielded(isError: false), .shielded(isError: true)
+        ]
+        XCTAssertFalse(SensitiveExportPolicy.shouldOfferShare(verdicts: verdicts))
+        XCTAssertTrue(SensitiveExportPolicy.exportable(verdicts, verdict: { $0 }).isEmpty)
+    }
+
+    /// A mixed selection still offers Share (the safe items are shareable).
+    func testMixedSelectionOffersShare() {
+        XCTAssertTrue(SensitiveExportPolicy.shouldOfferShare(
+            verdicts: [.shielded(isError: false), .none]))
+    }
+
+    /// An empty selection has nothing to share.
+    func testEmptySelectionOffersNoShare() {
+        XCTAssertFalse(SensitiveExportPolicy.shouldOfferShare(verdicts: []))
+    }
+
+    /// The controller seam the GRID resolves per item: a shielded key blocks
+    /// export, and it reads the same live verdict the blur is drawn from.
+    @MainActor
+    func testControllerBlocksExportForShieldedKey() {
+        let c = shieldingController()
+        XCTAssertTrue(c.blocksExport("tile-1"),
+                      "A shielded key must block export in the grid's share paths")
+    }
+
+    /// Reveal-in-scope flips export ON instantly — a verified adult who revealed
+    /// the item may share it, exactly as the slideshow already allowed.
+    @MainActor
+    func testRevealInScopeUnblocksExport() {
+        let c = shieldingController()
+        XCTAssertTrue(c.blocksExport("tile-1"))
+        c.revealKey("tile-1")
+        XCTAssertFalse(c.blocksExport("tile-1"),
+                       "A revealed item must become exportable without a rebuild")
+    }
+
+    /// An inactive guard never blocks export (hosts that don't gate at all).
+    @MainActor
+    func testInactiveGuardNeverBlocksExport() {
+        XCTAssertFalse(SensitiveOverlayController.inactive.blocksExport("tile-1"))
+    }
 }
 
 /// Minimal in-memory policy exercising the bulk-reveal contract shared by

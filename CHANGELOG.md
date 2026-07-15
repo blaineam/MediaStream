@@ -2,6 +2,28 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] - 2026-07-15
+
+### Fixed (the grid shared the ORIGINAL of a still-shielded item)
+
+- **Share was a hole straight through the sensitive-content overlay in the grid**: `MediaGalleryView` (the slideshow) has hard-blocked export for an unrevealed sensitive item since v2.7.2 — `currentItemBlocksExport` (`currentOverlayVerdict.isShielded`) gates its Share and per-item Download, because handing over the real original is strictly worse than un-blurring on screen. **`MediaGalleryGridView` had no equivalent and no `blocksExport` concept at all.** Both of its share paths ignored sensitivity entirely: the per-item **context-menu "Share"** (long-press a blurred thumbnail → `shareItem(_:)` → `getShareableItem()`) and the **multi-select Share** (`executeBuiltInShareAction()` → `shareSelected()`) each resolved and handed out the untouched original bytes of an item the viewer was not allowed to see. The grid consulted `sensitiveOverlay` only to *draw* the blur and to compute `shouldBulkBlock`.
+- **The bulk block was not covering this.** `shouldBulkBlock` is a whole-grid, threshold-gated decision (25% of items or 3 absolute, whichever hits first). A **minority** of shielded items in a larger gallery — 2 flagged of 12 — does not bulk-block by design, which left each of those items individually long-pressable and shareable. The leak was widest exactly where the bulk overlay intentionally stays out of the way.
+- **Every export path now asks per item**, through the same live verdict the blur is drawn from, so a reveal makes an item shareable instantly and re-shielding blocks it again with no rebuild:
+  - the context-menu **Share is hidden** for a shielded item;
+  - **`shareSelected()` drops shielded items before any bytes are resolved**, so a mixed selection shares only what the viewer is allowed to have rather than failing the whole batch;
+  - the multi-select **Share button is hidden when every selected item is shielded** (nothing could come out of it);
+  - **`shareItem(_:)` and `shareSelected()` guard themselves** regardless of what offered the affordance — the affordance and the code path are gated independently, so a future caller cannot reintroduce the leak by invoking them directly.
+
+### Added
+
+- `SensitiveExportPolicy` — the pure decision table behind every export affordance: `allowsExport(_:)` (shielded never exports, including the fail-closed error shield), `exportable(_:verdict:)` (filter a selection to what may leave the app), and `shouldOfferShare(verdicts:)` (offer Share unless every item is shielded, or the set is empty). Free of SwiftUI and of the controller, so the matrix is directly unit-testable — the same shape as `SensitiveBulkPolicy`.
+- `SensitiveOverlayController.blocksExport(_:)` — resolves one stable key to an export decision through `overlayVerdict(_:)`, the seam the grid uses per item. `SensitiveOverlayController.inactive` never blocks, so hosts that do not gate are unaffected.
+
+### Tests
+
+- Extended `SensitiveContentTests` with an export-gate section (8 tests, 45 XCTest / 96 Swift Testing total, all green): shielded and fail-closed-error verdicts never export, `.none` does; a mixed selection filters down to only the unshielded items; a fully-shielded selection offers no Share and yields nothing; an empty selection offers no Share; the controller blocks a shielded key; reveal-in-scope flips export on instantly; an inactive guard never blocks.
+- Mutation-tested: forcing `allowsExport` to `true` fails 7 tests, removing the `exportable` filter fails 2, and forcing `blocksExport` to `false` fails 2 — each caught by the test written for it.
+
 ## [2.9.0] - 2026-07-15
 
 ### Fixed (video player routing was dead code for query-based URLs)

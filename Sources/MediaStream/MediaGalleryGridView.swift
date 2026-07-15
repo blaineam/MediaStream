@@ -335,6 +335,40 @@ public struct MediaGalleryGridView: View {
         filteredItems.compactMap { ($0 as? SensitiveOverlayItem)?.sensitiveOverlayKey }
     }
 
+    /// Overlay verdict for ONE item, resolved through the same key the cell
+    /// blurs on (live as the observed controller publishes reveal changes).
+    private func overlayVerdict(for item: any MediaItem) -> SensitiveOverlayVerdict {
+        guard let key = (item as? SensitiveOverlayItem)?.sensitiveOverlayKey,
+              let overlay = configuration.sensitiveOverlay else { return .none }
+        return overlay.overlayVerdict(key)
+    }
+
+    /// True when this item is still shielded and therefore must not be shared.
+    /// The grid's per-item bulk overlay only covers the whole grid once a
+    /// threshold is met, so a MINORITY of shielded items is still individually
+    /// long-pressable — each export path has to ask per item.
+    private func blocksExport(_ item: any MediaItem) -> Bool {
+        !SensitiveExportPolicy.allowsExport(overlayVerdict(for: item))
+    }
+
+    /// The selected items, in gallery order (`selectedItems` holds unordered ids).
+    private var selectedMediaItems: [any MediaItem] {
+        mediaItems.filter { selectedItems.contains($0.id) }
+    }
+
+    /// The selected items that may actually be exported.
+    private var exportableSelection: [any MediaItem] {
+        SensitiveExportPolicy.exportable(selectedMediaItems, verdict: overlayVerdict(for:))
+    }
+
+    /// Whether the multi-select Share button should be offered for the current
+    /// selection at all.
+    private var selectionOffersShare: Bool {
+        SensitiveExportPolicy.shouldOfferShare(
+            verdicts: selectedMediaItems.map(overlayVerdict(for:))
+        )
+    }
+
     /// Whether the WHOLE grid should be covered by one bulk block + Reveal-All
     /// (a majority/threshold of items are still shielded). Delegates to the
     /// controller's SHARED `shouldBulkBlock(forKeys:totalCount:)` gate so the grid
@@ -631,8 +665,10 @@ public struct MediaGalleryGridView: View {
 
     private var multiSelectToolbar: some View {
         HStack(spacing: 16) {
-            // Built-in share action
-            if includeBuiltInShareAction {
+            // Built-in share action. Hidden when EVERY selected item is still
+            // shielded — nothing could come out of it. A mixed selection keeps
+            // Share and `shareSelected()` drops the shielded ones.
+            if includeBuiltInShareAction && selectionOffersShare {
                 Button(action: {
                     executeBuiltInShareAction()
                 }) {
@@ -727,12 +763,18 @@ public struct MediaGalleryGridView: View {
                         Label("View", systemImage: "eye")
                     }
 
-                    Button(action: {
-                        Task {
-                            await shareItem(item)
+                    // Share is HIDDEN for a still-shielded item: sharing hands
+                    // over the real original, which is exactly what the blur is
+                    // withholding. `shareItem` re-checks — gate the affordance
+                    // AND the code path.
+                    if !blocksExport(item) {
+                        Button(action: {
+                            Task {
+                                await shareItem(item)
+                            }
+                        }) {
+                            Label("Share", systemImage: "square.and.arrow.up")
                         }
-                    }) {
-                        Label("Share", systemImage: "square.and.arrow.up")
                     }
 
                     // Add custom actions from configuration
@@ -825,50 +867,51 @@ public struct MediaGalleryGridView: View {
     }
 
     private func shareSelected() {
-        print("🔍 ShareSelected: Starting with \(selectedItems.count) selected items")
+        // Shielded items are dropped BEFORE any bytes are resolved — a bulk
+        // share must never become the way to pull out the originals the grid is
+        // blurring. Independent of the toolbar's own gate.
+        let shareable = exportableSelection
+        print("🔍 ShareSelected: Starting with \(shareable.count) shareable of \(selectedItems.count) selected items")
+        guard !shareable.isEmpty else { return }
         Task {
             var items: [Any] = []
-            for (index, itemId) in selectedItems.enumerated() {
-                print("🔍 ShareSelected: Processing item \(index + 1)/\(selectedItems.count)")
-                if let mediaItem = mediaItems.first(where: { $0.id == itemId }) {
-                    print("🔍 ShareSelected: Found media item type: \(mediaItem.type)")
+            for (index, mediaItem) in shareable.enumerated() {
+                print("🔍 ShareSelected: Processing item \(index + 1)/\(shareable.count)")
+                print("🔍 ShareSelected: Found media item type: \(mediaItem.type)")
 
-                    // Try getShareableItem() first to preserve original format
-                    if let shareableItem = await mediaItem.getShareableItem() {
-                        // Check if it's a file URL (original format)
-                        if let url = shareableItem as? URL {
-                            print("✅ ShareSelected: Got file URL: \(url.path) (.\(url.pathExtension))")
-                            items.append(url)
-                            continue
-                        }
-
-                        // If it's an image object, create temp file as fallback
-                        #if os(iOS) || os(tvOS)
-                        if let image = shareableItem as? UIImage {
-                            print("📤 ShareSelected: Got UIImage, creating temp file")
-                            if let tempURL = await createTemporaryImageFile(from: image, isAnimated: mediaItem.type == .animatedImage) {
-                                items.append(tempURL)
-                            }
-                            continue
-                        }
-                        #elseif os(macOS)
-                        if let image = shareableItem as? NSImage {
-                            print("📤 ShareSelected: Got NSImage, creating temp file")
-                            if let tempURL = await createTemporaryImageFile(from: image, isAnimated: mediaItem.type == .animatedImage) {
-                                items.append(tempURL)
-                            }
-                            continue
-                        }
-                        #endif
-
-                        // Unknown type, append as-is
-                        print("📤 ShareSelected: Unknown type: \(type(of: shareableItem))")
-                        items.append(shareableItem)
-                    } else {
-                        print("⚠️ ShareSelected: getShareableItem() returned nil")
+                // Try getShareableItem() first to preserve original format
+                if let shareableItem = await mediaItem.getShareableItem() {
+                    // Check if it's a file URL (original format)
+                    if let url = shareableItem as? URL {
+                        print("✅ ShareSelected: Got file URL: \(url.path) (.\(url.pathExtension))")
+                        items.append(url)
+                        continue
                     }
+
+                    // If it's an image object, create temp file as fallback
+                    #if os(iOS) || os(tvOS)
+                    if let image = shareableItem as? UIImage {
+                        print("📤 ShareSelected: Got UIImage, creating temp file")
+                        if let tempURL = await createTemporaryImageFile(from: image, isAnimated: mediaItem.type == .animatedImage) {
+                            items.append(tempURL)
+                        }
+                        continue
+                    }
+                    #elseif os(macOS)
+                    if let image = shareableItem as? NSImage {
+                        print("📤 ShareSelected: Got NSImage, creating temp file")
+                        if let tempURL = await createTemporaryImageFile(from: image, isAnimated: mediaItem.type == .animatedImage) {
+                            items.append(tempURL)
+                        }
+                        continue
+                    }
+                    #endif
+
+                    // Unknown type, append as-is
+                    print("📤 ShareSelected: Unknown type: \(type(of: shareableItem))")
+                    items.append(shareableItem)
                 } else {
-                    print("⚠️ ShareSelected: Could not find media item with id \(itemId)")
+                    print("⚠️ ShareSelected: getShareableItem() returned nil")
                 }
             }
             await MainActor.run {
@@ -881,7 +924,6 @@ public struct MediaGalleryGridView: View {
     }
 
     private func executeMultiSelectAction(_ action: MediaGalleryMultiSelectAction) {
-        let selectedMediaItems = mediaItems.filter { selectedItems.contains($0.id) }
         action.action(selectedMediaItems)
     }
 
@@ -947,6 +989,13 @@ public struct MediaGalleryGridView: View {
     }
 
     private func shareItem(_ item: any MediaItem) async {
+        // HARD-BLOCK: never resolve the original bytes for a still-shielded
+        // item, whatever offered the affordance. Mirrors the slideshow's
+        // `currentItemBlocksExport` check on the same signal.
+        guard !blocksExport(item) else {
+            print("🛡️ ShareItem: blocked — item is shielded and not revealed")
+            return
+        }
         print("🔍 ShareItem: Preparing item type: \(item.type)")
 
         // Try getShareableItem() first to preserve original format

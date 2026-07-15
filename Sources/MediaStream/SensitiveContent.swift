@@ -416,6 +416,47 @@ public enum SensitiveOverlayVerdict: Equatable, Sendable {
     public var isShielded: Bool { self != .none }
 }
 
+/// Whether media may leave the app (Share / per-item Download). A shielded item
+/// is one the viewer is not yet allowed to SEE, so it must never be exportable —
+/// exporting hands over the real original bytes and bypasses the overlay
+/// entirely, which is a worse leak than un-blurring on screen.
+///
+/// This is the pure decision table behind every export affordance in the
+/// gallery. Both surfaces route through it so the grid and the slideshow can
+/// NEVER disagree about what is exportable — the slideshow already hard-blocked
+/// its Share on the same `isShielded` signal, while the grid's context-menu and
+/// multi-select Share paths did not consult the overlay at all and would hand
+/// out the originals behind a blurred thumbnail.
+///
+/// Kept free of SwiftUI and of the controller so the matrix is directly
+/// unit-testable, like `SensitiveBulkPolicy`.
+public enum SensitiveExportPolicy {
+    /// True when a single item with this overlay verdict may be exported.
+    /// Shielded (blurred, not yet revealed) never exports; `.none` — safe,
+    /// revealed in scope, or guard inactive — exports normally.
+    public static func allowsExport(_ verdict: SensitiveOverlayVerdict) -> Bool {
+        !verdict.isShielded
+    }
+
+    /// The subset of `items` that may be exported, dropping every shielded one.
+    /// Used to filter a multi-select share down to what the viewer is allowed to
+    /// have, rather than blocking the whole batch because one item is shielded.
+    public static func exportable<T>(
+        _ items: [T],
+        verdict: (T) -> SensitiveOverlayVerdict
+    ) -> [T] {
+        items.filter { allowsExport(verdict($0)) }
+    }
+
+    /// Whether a Share affordance should be offered at all for a set of items.
+    /// False when EVERY item is shielded (nothing could come out of it, so the
+    /// button would be a dead end) and for an empty set. A mixed selection still
+    /// offers Share — `exportable(_:verdict:)` narrows it to the allowed items.
+    public static func shouldOfferShare(verdicts: [SensitiveOverlayVerdict]) -> Bool {
+        verdicts.contains(where: allowsExport)
+    }
+}
+
 /// Type-erased, observable bridge the host builds from its `SensitiveContentPolicy`
 /// so the MediaStream gallery can (1) decide whether to overlay-blur an item,
 /// (2) re-render the instant a reveal flips, and (3) decide whether an item's
@@ -519,6 +560,14 @@ public final class SensitiveOverlayController: ObservableObject {
     public func overlayVerdict(_ key: String) -> SensitiveOverlayVerdict {
         if isKeyRevealedInScope(key) { return .none }
         return baseOverlayVerdict(key)
+    }
+
+    /// True when `key` must NOT be exported (shared / downloaded) because it is
+    /// still shielded for this viewer. Reads the SAME live verdict the blur is
+    /// drawn from, so a reveal in this scope immediately makes the item
+    /// exportable and re-shielding immediately blocks it again.
+    public func blocksExport(_ key: String) -> Bool {
+        !SensitiveExportPolicy.allowsExport(overlayVerdict(key))
     }
 
     /// True only when this item's REAL thumbnail is safe to persist to the disk
