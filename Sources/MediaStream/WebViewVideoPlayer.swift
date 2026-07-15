@@ -25,9 +25,31 @@ public typealias PlatformColor = NSColor
 // MARK: - Shared Interaction State
 
 /// Tracks when controls are being interacted with to block navigation gestures
+///
+/// NOTE: this is process-wide mutable state driving gesture routing, which is
+/// the root of the defect the `endInteraction()` calls below guard against —
+/// the flag is raised by a scrub Slider's `onEditingChanged(true)` and, if the
+/// matching `(false)` never arrives (view disappears mid-drag, gallery
+/// dismissed, gesture cancelled), it stays raised for the LIFETIME OF THE
+/// PROCESS and silently disables swipe navigation everywhere. Making this
+/// per-gallery instance state is the real fix, but it means threading a
+/// binding through `ZoomableMediaView`, `WebViewVideoPlayer` and the audio
+/// controls — too invasive for a point release. Instead every teardown path
+/// now calls `endInteraction()`, so a stuck flag cannot outlive the
+/// interaction that set it.
 public class MediaControlsInteractionState: ObservableObject {
     public static let shared = MediaControlsInteractionState()
     @Published public var isInteracting: Bool = false
+
+    /// Clear the flag from a teardown path (`onDisappear`, dismissal, …).
+    ///
+    /// Safe to call when no interaction is in flight — it no-ops rather than
+    /// republishing, so it can be wired into every teardown unconditionally.
+    @MainActor
+    public func endInteraction() {
+        guard isInteracting else { return }
+        isInteracting = false
+    }
 }
 
 // MARK: - Gesture Blocking Helper
@@ -1495,6 +1517,10 @@ public struct CustomWebViewVideoPlayerView: View {
         .onDisappear {
             controller.pause()
             scrubPreviewTask?.cancel()
+            // Release the shared interaction flag in case the scrub Slider was
+            // mid-drag — its `onEditingChanged(false)` will never arrive now,
+            // and a stuck flag disables swipe navigation process-wide.
+            MediaControlsInteractionState.shared.endInteraction()
         }
     }
 

@@ -889,6 +889,29 @@ struct SlideshowConfigurationTests {
         #expect(config.slideshowAutoStart == false)
         #expect(config.onLoopModeChange == nil)
         #expect(config.onShuffleChange == nil)
+        // v2.9.0: autoplay must default OFF, so an untouched consumer keeps
+        // "video only plays while the slideshow runs".
+        #expect(config.autoPlayVideoOnOpen == false)
+    }
+
+    @Test("Autoplay-on-open is independent of slideshow autostart")
+    func autoPlayVideoOnOpenIsOrthogonal() {
+        // The point of the knob: play the current slide's video WITHOUT
+        // starting the slideshow, so the album never auto-advances.
+        let autoplayOnly = MediaGalleryConfiguration(autoPlayVideoOnOpen: true)
+        #expect(autoplayOnly.autoPlayVideoOnOpen == true)
+        #expect(autoplayOnly.slideshowAutoStart == false)
+
+        // ...and the reverse: autostarting the slideshow must not silently
+        // imply the new flag.
+        let slideshowOnly = MediaGalleryConfiguration(slideshowAutoStart: true)
+        #expect(slideshowOnly.slideshowAutoStart == true)
+        #expect(slideshowOnly.autoPlayVideoOnOpen == false)
+
+        // Both together stay legal and independent.
+        let both = MediaGalleryConfiguration(slideshowAutoStart: true, autoPlayVideoOnOpen: true)
+        #expect(both.slideshowAutoStart == true)
+        #expect(both.autoPlayVideoOnOpen == true)
     }
 
     @Test("Slideshow seeds round-trip through the configuration")
@@ -918,5 +941,161 @@ struct SlideshowConfigurationTests {
     @Test("Shuffled order is empty for an empty collection")
     func shuffledOrderEmptyCollection() {
         #expect(MediaGalleryView.shuffledOrder(count: 0, startingAt: 0).isEmpty)
+    }
+}
+
+// MARK: - Video Player Routing Tests
+
+@Suite("Video Player Routing Tests")
+struct VideoPlayerRoutingTests {
+    @Test("Query-based URLs route on diskCacheKey, not the empty path extension")
+    func queryBasedURLRoutesOnCacheKey() {
+        // The regression: a host serving media from a query-based URL has an
+        // EMPTY pathExtension, so the old `url.pathExtension == "webm"` test
+        // never matched and every video — WebM included — went to AVFoundation,
+        // which cannot decode VP8/VP9 and hung forever.
+        let queryURL = URL(string: "https://host.example/media?id=abc123")!
+
+        #expect(queryURL.pathExtension.isEmpty)  // pins WHY the old test failed
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: "clip.webm",
+            urls: [queryURL]
+        ) == true)
+    }
+
+    @Test("diskCacheKey wins over a misleading URL extension")
+    func cacheKeyTakesPrecedence() {
+        let mp4URL = URL(string: "https://host.example/stream.mp4")!
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: "actually_a.webm",
+            urls: [mp4URL]
+        ) == true)
+    }
+
+    @Test("Extensioned URLs still route correctly when no cache key exists")
+    func urlExtensionFallback() {
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: nil,
+            urls: [URL(string: "https://host.example/clip.webm")!]
+        ) == true)
+
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: nil,
+            urls: [URL(string: "https://host.example/clip.mp4")!]
+        ) == false)
+    }
+
+    @Test("A filename in a query value is the last resort")
+    func queryValueCarriesTheFilename() {
+        // A query-based host commonly passes the real path as a parameter.
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: nil,
+            urls: [URL(string: "https://host.example/api/?path=Album/clip.webm")!]
+        ) == true)
+
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: nil,
+            urls: [URL(string: "https://host.example/api/?path=Album/clip.mp4")!]
+        ) == false)
+    }
+
+    @Test("Routing is case-insensitive")
+    func routingIsCaseInsensitive() {
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(diskCacheKey: "CLIP.WebM", urls: []) == true)
+    }
+
+    @Test("Nothing carrying a type leaves AVFoundation to try")
+    func noTypeInformationDefaultsToAVFoundation() {
+        // An opaque cache key and an extensionless URL: AVFoundation is the
+        // better player when it works, and the readiness timeout in
+        // ZoomableMediaView catches it when it doesn't.
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(
+            diskCacheKey: "9f8a7b6c5d4e",
+            urls: [URL(string: "https://host.example/media?id=abc")!]
+        ) == false)
+
+        #expect(VideoPlayerRouter.containerExtension(diskCacheKey: nil, urls: [nil]) == nil)
+    }
+
+    @Test("MKV and AVI stay on the AVFoundation path")
+    func unsupportedContainersAreNotSentToWebKit() {
+        // WebKit can't play these either — routing them to the WebView player
+        // would trade one broken player for another.
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(diskCacheKey: "clip.mkv", urls: []) == false)
+        #expect(VideoPlayerRouter.requiresWebViewPlayer(diskCacheKey: "clip.avi", urls: []) == false)
+    }
+
+    @Test("containerExtension normalizes to a bare lowercase extension")
+    func containerExtensionShape() {
+        #expect(VideoPlayerRouter.containerExtension(diskCacheKey: "a/b/Clip.MP4", urls: []) == "mp4")
+    }
+}
+
+// MARK: - Swipe Navigation Tests
+
+@Suite("Swipe Navigation Tests")
+struct SwipeNavigationTests {
+    @Test("A quick flick registers even though it barely travels")
+    func fastFlickRegisters() {
+        // The regression: minimumDistance 100 + a 100pt end-translation test
+        // meant a flick — which lifts after ~30pt and carries on momentum —
+        // never changed slides.
+        let direction = MediaGalleryView.swipeDirection(
+            translation: CGSize(width: -30, height: 4),
+            predictedEndTranslation: CGSize(width: -260, height: 20)
+        )
+        #expect(direction == -1)  // next item
+    }
+
+    @Test("A deliberate slow drag registers with no momentum")
+    func slowDragRegisters() {
+        let direction = MediaGalleryView.swipeDirection(
+            translation: CGSize(width: 70, height: 10),
+            predictedEndTranslation: CGSize(width: 70, height: 10)
+        )
+        #expect(direction == 1)  // previous item
+    }
+
+    @Test("A vertical scroll never changes slides")
+    func verticalScrollRejected() {
+        #expect(MediaGalleryView.swipeDirection(
+            translation: CGSize(width: 20, height: 200),
+            predictedEndTranslation: CGSize(width: 40, height: 600)
+        ) == nil)
+    }
+
+    @Test("A diagonal drag is rejected unless clearly horizontal")
+    func diagonalDragRejected() {
+        // 60pt horizontal clears the commit distance on its own, but 50pt of
+        // vertical makes it ambiguous — this is the guard that keeps a
+        // zoom-pan or a drifting scroll from flipping slides.
+        #expect(MediaGalleryView.swipeDirection(
+            translation: CGSize(width: 60, height: 50),
+            predictedEndTranslation: CGSize(width: 60, height: 50)
+        ) == nil)
+    }
+
+    @Test("A small nudge with no momentum is not a swipe")
+    func tinyNudgeRejected() {
+        #expect(MediaGalleryView.swipeDirection(
+            translation: CGSize(width: 22, height: 2),
+            predictedEndTranslation: CGSize(width: 25, height: 2)
+        ) == nil)
+    }
+
+    @Test("A still finger is not a swipe")
+    func zeroTranslationRejected() {
+        #expect(MediaGalleryView.swipeDirection(
+            translation: .zero,
+            predictedEndTranslation: .zero
+        ) == nil)
+    }
+
+    @Test("Thresholds are loose enough for a flick, strict enough to stay directional")
+    func thresholdsArePinned() {
+        // Pins the balance so a later tweak has to be deliberate.
+        #expect(MediaGalleryView.swipeMinimumDistance < 100)   // was 100 — flicks never started
+        #expect(MediaGalleryView.swipeCommitDistance < 100)    // was 100 — flicks never committed
+        #expect(MediaGalleryView.swipeHorizontalDominance >= 1.5)  // still clearly horizontal
     }
 }

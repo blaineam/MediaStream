@@ -338,6 +338,11 @@ struct CustomVideoPlayerView: View {
         }
         .onDisappear {
             cleanupPlayer()
+            // This view owns a scrub Slider that raises the shared interaction
+            // flag. If it goes away mid-drag the Slider's
+            // `onEditingChanged(false)` never fires, so release the flag here
+            // or it stays raised for the lifetime of the process.
+            MediaControlsInteractionState.shared.endInteraction()
         }
         .onChange(of: shouldAutoplay) { _, newValue in
             if newValue {
@@ -812,6 +817,10 @@ struct AudioPlayerControlsView: View {
             .onDisappear {
                 // Clean up observers when view is truly removed from hierarchy
                 cleanupObservers()
+                // Release the shared interaction flag in case this view's scrub
+                // Slider was mid-drag — its `onEditingChanged(false)` will
+                // never arrive now.
+                MediaControlsInteractionState.shared.endInteraction()
             }
             .opacity(showControls ? 1 : 0)
             .allowsHitTesting(showControls)
@@ -1497,6 +1506,11 @@ struct ZoomableMediaView: View {
     let mediaItem: any MediaItem
     let onZoomChanged: (Bool) -> Void
     var isSlideshowPlaying: Bool = false
+    /// Play this slide's video/audio when it is the current slide even though
+    /// the slideshow is NOT running (`MediaGalleryConfiguration.autoPlayVideoOnOpen`).
+    /// Only affects whether media starts — it never advances the album, which
+    /// stays gated on `isSlideshowPlaying` in `MediaGalleryView`.
+    var autoPlayVideoOnOpen: Bool = false
     var showControls: Bool = true
     var isCurrentSlide: Bool = false
     var videoLoopCount: Int = 0
@@ -1548,6 +1562,17 @@ struct ZoomableMediaView: View {
     /// we need at most ~2000px for display. Full resolution only needed for sharing.
     private static let maxDisplayPixelSize: CGFloat = 2000
 
+    /// Whether this slide's media should be playing right now.
+    ///
+    /// Either the slideshow is running, or the host asked for the current
+    /// slide's video to play on its own (`autoPlayVideoOnOpen`). Autoplay and
+    /// auto-advance used to be the same condition (`isSlideshowPlaying`); this
+    /// splits them — advancing still keys off `isSlideshowPlaying` alone in
+    /// `MediaGalleryView`, so autoplaying here never moves the album on.
+    private var shouldPlayCurrentSlide: Bool {
+        (isSlideshowPlaying || autoPlayVideoOnOpen) && isCurrentSlide
+    }
+
     /// Audio player view with album artwork and AVFoundation-based playback controls
     @ViewBuilder
     private func audioPlayerView(geometry: GeometryProxy) -> some View {
@@ -1592,7 +1617,7 @@ struct ZoomableMediaView: View {
                     AudioPlayerControlsView(
                         player: player,
                         mediaItem: mediaItem,
-                        shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                        shouldAutoplay: shouldPlayCurrentSlide,
                         showControls: showControls,
                         isCurrentSlide: isCurrentSlide,
                         videoLoopCount: videoLoopCount,
@@ -1665,7 +1690,7 @@ struct ZoomableMediaView: View {
             ZStack {
                 CustomWebViewVideoPlayerView(
                     controller: videoController,
-                    shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                    shouldAutoplay: shouldPlayCurrentSlide,
                     showControls: showControls && videoController.isReady,
                     hasAudio: true,
                     showVolumeSlider: false,
@@ -1687,7 +1712,7 @@ struct ZoomableMediaView: View {
             CustomVideoPlayerView(
                 player: player,
                 mediaItem: mediaItem,
-                shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                shouldAutoplay: shouldPlayCurrentSlide,
                 showControls: showControls,
                 isCurrentSlide: isCurrentSlide,
                 videoLoopCount: videoLoopCount,
@@ -1711,7 +1736,7 @@ struct ZoomableMediaView: View {
             CustomVideoPlayerView(
                 player: player,
                 mediaItem: mediaItem,
-                shouldAutoplay: isSlideshowPlaying && isCurrentSlide,
+                shouldAutoplay: shouldPlayCurrentSlide,
                 showControls: showControls,
                 isCurrentSlide: isCurrentSlide,
                 videoLoopCount: videoLoopCount,
@@ -1922,10 +1947,11 @@ struct ZoomableMediaView: View {
             if mediaItem.type == .video {
                 if newValue && !oldValue {
                     // When this slide becomes current (and wasn't before), show first frame for videos
-                    // Only if not in slideshow mode (slideshow will autoplay)
+                    // Only if nothing will autoplay it — the slideshow, or
+                    // `autoPlayVideoOnOpen`, starts it instead of posing it
                     #if canImport(WebKit)
                     if useWebViewForVideo {
-                        if !isSlideshowPlaying && videoController.isReady {
+                        if !shouldPlayCurrentSlide && videoController.isReady {
                             videoController.showFirstFrame()
                         }
                     }
@@ -2507,10 +2533,16 @@ struct ZoomableMediaView: View {
                     guard FileManager.default.fileExists(atPath: url.path) else { return }
                 }
 
-                // Check file extension to determine player type
+                // Determine the player from whatever actually carries the
+                // container type — NOT from `url.pathExtension` alone, which is
+                // EMPTY for a query-based media URL and therefore handed every
+                // video to AVFoundation regardless of container. See
+                // `VideoPlayerRouter`.
                 // WebM requires WKWebView (AVFoundation doesn't support WebM/VP8/VP9)
-                let ext = url.pathExtension.lowercased()
-                let isWebM = ext == "webm"
+                let isWebM = VideoPlayerRouter.requiresWebViewPlayer(
+                    diskCacheKey: mediaItem.diskCacheKey,
+                    urls: [url, mediaItem.sourceURL]
+                )
 
                 var useAVFoundation = !isWebM
 
@@ -2527,7 +2559,9 @@ struct ZoomableMediaView: View {
                             _ = videoController.createWebView()
                         }
                         videoController.load(url: url, headers: headers)
-                        if !isSlideshowPlaying && isCurrentSlide {
+                        // Pose the first frame only when nothing is going to
+                        // autoplay this slide.
+                        if !shouldPlayCurrentSlide && isCurrentSlide {
                             Task {
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                                 if videoController.isReady {
@@ -2542,7 +2576,7 @@ struct ZoomableMediaView: View {
 
                 if useAVFoundation {
                     // Non-WebM (or no WebKit): Try AVFoundation (better performance/controls)
-                    // Include auth headers so rclone-served URLs don't fail with -1013
+                    // Include auth headers so host-served URLs don't fail with -1013
                     let headers = await MediaStreamConfiguration.headersAsync(for: url)
                     let asset: AVURLAsset
                     if let headers = headers, !headers.isEmpty {
@@ -2575,6 +2609,16 @@ struct ZoomableMediaView: View {
                                 videoURL = url
                                 hasLoadedMedia = true
                             }
+
+                            #if canImport(WebKit)
+                            // `isPlayable` only means the container was parsed —
+                            // it can report true for a track AVFoundation cannot
+                            // actually decode, and the item then NEVER reaches
+                            // .readyToPlay and never errors: playback just hangs
+                            // forever with no fallback. Give it a bounded window
+                            // to become ready and fall back if it doesn't.
+                            await fallbackIfNeverReady(playerItem: playerItem, url: url)
+                            #endif
                         } else {
                             #if canImport(WebKit)
                             // AVFoundation can't play it - fallback to WebView
@@ -2659,7 +2703,7 @@ struct ZoomableMediaView: View {
                 print("[ZoomableMediaView] 🎵 Loading audio (loadMedia)")
                 await MediaPlaybackService.shared.loadAudioInSharedPlayer(
                     mediaItem: mediaItem,
-                    autoplay: isSlideshowPlaying
+                    autoplay: shouldPlayCurrentSlide
                 )
                 // Reference the shared player for UI compatibility
                 await MainActor.run {
@@ -2674,6 +2718,45 @@ struct ZoomableMediaView: View {
     }
 
     #if canImport(WebKit)
+    /// How long an AVFoundation item that reported itself playable gets to
+    /// actually reach `.readyToPlay` before we stop believing it.
+    ///
+    /// Generous on purpose: a remote stream on a slow connection can take a
+    /// while, and a false fallback would demote a perfectly good AVFoundation
+    /// player to the WebView one. A container AVFoundation truly cannot decode
+    /// never becomes ready at all, so it always trips this.
+    private static let avReadinessTimeout: TimeInterval = 15.0
+
+    /// Watch an AVFoundation item that claimed to be playable and fall back to
+    /// the WebView player if it never becomes ready.
+    ///
+    /// `.failed` is handled by the existing `catch` / `isPlayable` paths; the
+    /// gap this closes is the SILENT one — status pinned at `.unknown` forever.
+    private func fallbackIfNeverReady(playerItem: AVPlayerItem, url: URL) async {
+        let deadline = Date().addingTimeInterval(Self.avReadinessTimeout)
+
+        while Date() < deadline {
+            if Task.isCancelled { return }
+
+            let status = playerItem.status
+            if status == .readyToPlay { return }
+            if status == .failed { break }
+
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        // Only act if this view is still showing the same AVFoundation-backed
+        // item — the user may have swiped away, or another path may have
+        // already switched players, while we were waiting.
+        let stillStuck = await MainActor.run {
+            !useWebViewForVideo && videoURL == url && playerItem.status != .readyToPlay
+        }
+        guard stillStuck else { return }
+
+        print("[MediaStream] AVFoundation reported the video playable but it never became ready within \(Self.avReadinessTimeout)s — falling back to WebView")
+        await fallbackToWebView(url: url)
+    }
+
     /// Fallback to WebView player when AVFoundation can't play the video
     private func fallbackToWebView(url: URL) async {
         let headers = await MediaStreamConfiguration.headersAsync(for: url)
@@ -2687,7 +2770,9 @@ struct ZoomableMediaView: View {
             }
             videoController.load(url: url, headers: headers)
 
-            if !isSlideshowPlaying && isCurrentSlide {
+            // Pose the first frame only when nothing is going to autoplay this
+            // slide.
+            if !shouldPlayCurrentSlide && isCurrentSlide {
                 Task {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     if videoController.isReady {

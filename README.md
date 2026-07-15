@@ -571,6 +571,27 @@ let config = MediaGalleryConfiguration(
   **clears that override**, so a host-side interval picker is never permanently
   shadowed by one use of the menu.
 
+#### Autoplay a video without running the slideshow (v2.9.0)
+
+"Play the video when its slide opens" and "run the slideshow" are two different
+wants. `slideshowAutoStart` does the second (and, before v2.9.0, was the only
+way to get the first — video playback was gated on the slideshow running, so
+autoplaying a video also meant auto-advancing the album). Use
+`autoPlayVideoOnOpen` for the first:
+
+```swift
+let config = MediaGalleryConfiguration(
+    autoPlayVideoOnOpen: true   // Play the current slide's video; do NOT advance
+)
+```
+
+- The current slide's video/audio starts on its own; when it ends **nothing
+  advances** — the gallery stays put.
+- Orthogonal to `slideshowAutoStart`, which keeps its exact meaning. Set both to
+  autostart the slideshow and have it advance, exactly as before.
+- Defaults to `false`, which is the pre-v2.9.0 behavior: media plays only while
+  the slideshow is running.
+
 ### 5. Custom Filtering and Sorting
 
 ```swift
@@ -997,6 +1018,7 @@ public struct MediaGalleryConfiguration {
     public var slideshowInitialLoopMode: LoopMode = .all
     public var slideshowShuffled: Bool = false
     public var slideshowAutoStart: Bool = false
+    public var autoPlayVideoOnOpen: Bool = false
     public var onLoopModeChange: ((LoopMode) -> Void)?
     public var onShuffleChange: ((Bool) -> Void)?
 }

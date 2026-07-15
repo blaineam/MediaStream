@@ -15,6 +15,82 @@ import UIKit
 import AppKit
 #endif
 
+// MARK: - Player Routing
+
+/// Decides which player a video needs, from whatever actually carries the
+/// container type.
+///
+/// Routing MUST NOT be driven by `url.pathExtension` alone. A host that serves
+/// media from a *query-based* URL (`https://host/media?id=abc`, `/proxy?key=…`)
+/// has an EMPTY path extension, so an extension test never matches and every
+/// video — including containers AVFoundation cannot decode — is handed to
+/// AVFoundation. `diskCacheKey` is the reliable carrier: hosts are expected to
+/// put the real filename there, and `MediaPlaybackService` already keys its
+/// `.webm` behavior off it, so consulting it first is consistent with the rest
+/// of the package. The URL stays as a fallback for hosts that DO serve
+/// extensioned paths.
+public enum VideoPlayerRouter {
+
+    /// Containers AVFoundation cannot decode on any Apple platform, but which
+    /// WKWebView's HTML5 `<video>` can (VP8/VP9 in a WebM container).
+    ///
+    /// Deliberately narrow. Formats like MKV/AVI are *also* unsupported by
+    /// AVFoundation, but WebKit cannot play them either — routing them here
+    /// would trade one broken player for another. They stay on the AVFoundation
+    /// path, where the `isPlayable` check and the readiness timeout in
+    /// `ZoomableMediaView` handle them without hanging forever.
+    public static let webViewOnlyExtensions: Set<String> = ["webm"]
+
+    /// Lowercased container extension for a media item, preferring the source
+    /// that actually carries the type.
+    ///
+    /// Order: `diskCacheKey` (host-supplied filename) → each URL's path
+    /// extension → each URL's query values (a query-based host commonly passes
+    /// the real path as a parameter, e.g. `?path=Album/clip.webm`).
+    /// - Returns: The extension without a dot, or nil when nothing carries one.
+    public static func containerExtension(diskCacheKey: String?, urls: [URL?]) -> String? {
+        if let ext = nonEmptyExtension(of: diskCacheKey) { return ext }
+
+        let candidates = urls.compactMap { $0 }
+
+        for url in candidates {
+            if let ext = nonEmptyExtension(of: url.path) { return ext }
+        }
+
+        // Last resort: a query-based URL carries no path extension, but the
+        // real filename is usually sitting in one of its query values.
+        for url in candidates {
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let queryItems = components.queryItems else { continue }
+            for item in queryItems {
+                if let ext = nonEmptyExtension(of: item.value) { return ext }
+            }
+        }
+
+        return nil
+    }
+
+    /// Whether this item must use the WKWebView player because AVFoundation
+    /// cannot decode its container.
+    public static func requiresWebViewPlayer(diskCacheKey: String?, urls: [URL?]) -> Bool {
+        guard let ext = containerExtension(diskCacheKey: diskCacheKey, urls: urls) else {
+            // Nothing carries a type — let AVFoundation try. It is the better
+            // player when it works, and the readiness timeout catches it when
+            // it doesn't.
+            return false
+        }
+        return webViewOnlyExtensions.contains(ext)
+    }
+
+    /// `pathExtension` for a path-like string, normalized to lowercase and to
+    /// nil rather than "" when absent.
+    private static func nonEmptyExtension(of path: String?) -> String? {
+        guard let path = path else { return nil }
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ext.isEmpty ? nil : ext
+    }
+}
+
 /// Helper for extracting video metadata
 /// Uses AVFoundation first, then falls back to WebView-based HTML5 video for WebM and other formats
 public enum VideoMetadata {

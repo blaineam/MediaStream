@@ -87,6 +87,18 @@ public struct MediaGalleryConfiguration {
     public var slideshowShuffled: Bool
     /// Whether the slideshow starts playing as soon as the gallery appears.
     public var slideshowAutoStart: Bool
+    /// Whether the current slide's video/audio starts playing on its own,
+    /// WITHOUT starting the slideshow.
+    ///
+    /// These are two different wants and used to be the same flag: playback was
+    /// gated on `isSlideshowPlaying`, which only `startSlideshow()` sets, so the
+    /// only way to autoplay a video was to also auto-advance the album. Set this
+    /// for "play the video when its slide opens, but stay on this slide" —
+    /// media plays, and nothing advances when it ends.
+    ///
+    /// Orthogonal to `slideshowAutoStart`, which keeps its exact meaning. With
+    /// both set the slideshow runs and advances as before.
+    public var autoPlayVideoOnOpen: Bool
     /// Called when the user changes the loop mode with the in-gallery loop
     /// button, so the host can persist the choice. NOT called for the seed or
     /// for the short-clip auto-`.one` rule.
@@ -106,6 +118,7 @@ public struct MediaGalleryConfiguration {
         slideshowInitialLoopMode: LoopMode = .all,
         slideshowShuffled: Bool = false,
         slideshowAutoStart: Bool = false,
+        autoPlayVideoOnOpen: Bool = false,
         onLoopModeChange: ((LoopMode) -> Void)? = nil,
         onShuffleChange: ((Bool) -> Void)? = nil
     ) {
@@ -119,6 +132,7 @@ public struct MediaGalleryConfiguration {
         self.slideshowInitialLoopMode = slideshowInitialLoopMode
         self.slideshowShuffled = slideshowShuffled
         self.slideshowAutoStart = slideshowAutoStart
+        self.autoPlayVideoOnOpen = autoPlayVideoOnOpen
         self.onLoopModeChange = onLoopModeChange
         self.onShuffleChange = onShuffleChange
     }
@@ -153,6 +167,66 @@ public struct MediaGalleryView: View {
         guard count > 0 else { return 0 }
         return min(max(0, index), count - 1)
     }
+
+    // MARK: - Swipe Navigation Thresholds
+
+    /// Finger travel before the navigation drag engages at all.
+    ///
+    /// The old value was 100pt, which — combined with the 100pt end-translation
+    /// test below — meant a fast flick never even STARTED the gesture: the
+    /// finger lifts after ~30-60pt of travel and all the distance is momentum.
+    /// Low enough to catch a flick, high enough that a tap never becomes a drag.
+    static let swipeMinimumDistance: CGFloat = 20
+
+    /// Actual travel that commits a slide change on its own, for a deliberate
+    /// slow drag where there is no momentum to predict.
+    static let swipeCommitDistance: CGFloat = 50
+
+    /// Momentum-projected travel that commits a slide change for a quick flick
+    /// that never covers `swipeCommitDistance` under the finger. Higher than
+    /// the committed distance because a predicted end is cheap to reach —
+    /// it takes a deliberately fast horizontal throw, not a drifting finger.
+    static let swipeFlickDistance: CGFloat = 120
+
+    /// How much more horizontal than vertical the drag must be. This is what
+    /// keeps a vertical scroll or a diagonal zoom-pan from changing slides, and
+    /// it is the guard doing the real work now that the distances are lower —
+    /// so it stays strict rather than relaxing alongside them.
+    static let swipeHorizontalDominance: CGFloat = 1.5
+
+    /// Decide whether a drag is a slide-changing swipe, and in which direction.
+    ///
+    /// - Returns: `-1` for a leftward swipe (next item), `1` for rightward
+    ///   (previous item), or nil when the drag is not a navigation swipe.
+    static func swipeDirection(translation: CGSize, predictedEndTranslation: CGSize) -> CGFloat? {
+        let horizontal = abs(translation.width)
+        let vertical = abs(translation.height)
+
+        // Must be clearly horizontal — rejects vertical scrolls and zoom-pans.
+        guard horizontal > vertical * swipeHorizontalDominance else { return nil }
+
+        // Either a committed drag, or a flick whose momentum carries it far
+        // enough. The flick arm is what the old end-translation test missed.
+        let committed = horizontal >= swipeCommitDistance
+        let flicked = abs(predictedEndTranslation.width) >= swipeFlickDistance
+        guard committed || flicked else { return nil }
+
+        // Direction comes from real travel; a flick measured at zero falls back
+        // to where the momentum was heading.
+        let dx = translation.width != 0 ? translation.width : predictedEndTranslation.width
+        guard dx != 0 else { return nil }
+        return dx < 0 ? -1 : 1
+    }
+
+    #if !os(tvOS)
+    /// `swipeDirection(translation:predictedEndTranslation:)` for a live drag.
+    static func swipeDirection(for value: DragGesture.Value) -> CGFloat? {
+        swipeDirection(
+            translation: value.translation,
+            predictedEndTranslation: value.predictedEndTranslation
+        )
+    }
+    #endif
 
     /// `currentIndex` clamped to the current `mediaItems` range. The caller can
     /// pass a shorter array on a later update (item deleted) while @State still
@@ -364,6 +438,7 @@ public struct MediaGalleryView: View {
                             handleZoomChanged(zoomed)
                         },
                         isSlideshowPlaying: isSlideshowPlaying,
+                        autoPlayVideoOnOpen: configuration.autoPlayVideoOnOpen,
                         showControls: showControls,
                         isCurrentSlide: safeIndex == index,
                         videoLoopCount: safeIndex == index ? videoLoopCount : 0,
@@ -415,21 +490,18 @@ public struct MediaGalleryView: View {
                     .allowsHitTesting(safeIndex == index)
                     #if !os(tvOS)
                     .simultaneousGesture(
-                        // Navigation gesture - only activates for large horizontal swipes when not zoomed
+                        // Navigation gesture - horizontal swipes when not zoomed
                         // Disabled for VR items so drag controls the VR camera instead
-                        DragGesture(minimumDistance: 100)
+                        DragGesture(minimumDistance: Self.swipeMinimumDistance)
                             .onEnded { value in
                                 guard !isZoomed else { return }
                                 guard !isCurrentItemVRSphere else { return }
                                 guard !MediaControlsInteractionState.shared.isInteracting else { return }
-                                let horizontalAmount = abs(value.translation.width)
-                                let verticalAmount = abs(value.translation.height)
-                                if horizontalAmount > verticalAmount * 2 && horizontalAmount > 100 {
-                                    if value.translation.width < 0 {
-                                        nextItem()
-                                    } else {
-                                        previousItem()
-                                    }
+                                guard let direction = Self.swipeDirection(for: value) else { return }
+                                if direction < 0 {
+                                    nextItem()
+                                } else {
+                                    previousItem()
                                 }
                             }
                     )
@@ -848,6 +920,13 @@ public struct MediaGalleryView: View {
             stopSlideshow()
             cancelHideControls()
             cleanupPlaybackService()
+
+            // A scrub-drag that was in flight when the gallery went away never
+            // gets its Slider's `onEditingChanged(false)`, so the shared
+            // interaction flag would stay raised for the rest of the PROCESS
+            // and silently kill swipe navigation in every later gallery.
+            // Release it on the way out.
+            MediaControlsInteractionState.shared.endInteraction()
 
             // Ensure idle timer is re-enabled when gallery is dismissed
             #if os(iOS)
