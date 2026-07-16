@@ -516,6 +516,55 @@ final class SensitiveContentTests: XCTestCase {
     func testInactiveGuardNeverBlocksExport() {
         XCTAssertFalse(SensitiveOverlayController.inactive.blocksExport("tile-1"))
     }
+
+    // MARK: Host Share opt-out ANDed with the export gate (v2.11.0)
+
+    /// The full 2x2. Either gate withholds Share; neither can force it back on.
+    @MainActor
+    func testShouldOfferShareButtonMatrix() {
+        let shows = MediaGalleryConfiguration(showShareButton: true)
+        let hides = MediaGalleryConfiguration(showShareButton: false)
+
+        XCTAssertTrue(shows.shouldOfferShareButton(blocksExport: false),
+                      "Host allows + item exportable => Share offered")
+        XCTAssertFalse(shows.shouldOfferShareButton(blocksExport: true),
+                       "SCA must still block even when the host allows Share")
+        XCTAssertFalse(hides.shouldOfferShareButton(blocksExport: false),
+                       "Host opt-out must hide Share with NO sensitive-content guard involved")
+        XCTAssertFalse(hides.shouldOfferShareButton(blocksExport: true),
+                       "Both gates closed => Share offered under no circumstances")
+    }
+
+    /// Defaults true: hosts built before this knob existed are unaffected.
+    @MainActor
+    func testShareButtonDefaultsToShown() {
+        XCTAssertTrue(MediaGalleryConfiguration().showShareButton)
+        XCTAssertTrue(MediaGalleryConfiguration().shouldOfferShareButton(blocksExport: false))
+    }
+
+    /// THE bug this knob exists for: a host that gates NO sensitive content
+    /// (sensitiveOverlay nil, so blocksExport is always false) must still be
+    /// able to hide Share. Before this, hiding it required wiring the whole SCA
+    /// guard — a content-safety mechanism used to express a product decision.
+    @MainActor
+    func testHostWithNoSensitiveGuardCanStillHideShare() {
+        let config = MediaGalleryConfiguration(sensitiveOverlay: nil, showShareButton: false)
+        XCTAssertNil(config.sensitiveOverlay)
+        XCTAssertFalse(config.shouldOfferShareButton(blocksExport: false),
+                       "Hiding Share must NOT require a sensitive-content guard")
+    }
+
+    /// A revealed item does not override a host that said no.
+    @MainActor
+    func testRevealDoesNotOverrideHostOptOut() {
+        let c = shieldingController()
+        c.revealKey("tile-1")
+        XCTAssertFalse(c.blocksExport("tile-1"), "precondition: reveal unblocks the SCA gate")
+        XCTAssertFalse(
+            MediaGalleryConfiguration(showShareButton: false)
+                .shouldOfferShareButton(blocksExport: c.blocksExport("tile-1")),
+            "A reveal must not resurrect Share for a host that opted out")
+    }
 }
 
 /// Minimal in-memory policy exercising the bulk-reveal contract shared by

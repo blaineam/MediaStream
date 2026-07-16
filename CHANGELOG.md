@@ -2,6 +2,20 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-07-15
+
+### Added (hiding Share no longer requires wiring the sensitive-content guard)
+
+- **A host had no way to turn Share off**: the slideshow's Share button and the grid's per-item context-menu Share were unconditional, and the grid's `includeBuiltInShareAction` only ever covered the multi-select toolbar — not the context menu. The *only* thing that could withhold Share was `blocksExport`, which is driven entirely by `sensitiveOverlay`. So a host that gates no sensitive content (`sensitiveOverlay` nil ⇒ `blocksExport` always false) could not hide Share at all, and one that wanted to would have had to wire up the whole sensitive-content guard to do it. That is backwards: **"don't offer sharing from this gallery" is a product decision, not a content-safety one.** `MediaGalleryConfiguration` gains one **additive, defaulted** member:
+  - `showShareButton: Bool = true` — hides the built-in Share affordance everywhere: the slideshow button, the grid context menu, and the multi-select toolbar. Defaults true, so existing hosts are unaffected.
+- **The two gates AND, and neither can override the other.** `MediaGalleryConfiguration.shouldOfferShareButton(blocksExport:)` is the single place they combine: the host's opt-out doesn't care *why* an item is shielded, and a verified adult's reveal does **not** resurrect Share for a host that said no. Kept pure so the matrix is unit-testable rather than trapped in a view.
+- **Gate the affordance AND the path, per the pattern v2.10.0 established.** `shareItem(_:)` and `shareSelected()` now consult the combined gate, and `shareCurrentItem()` — which previously had **no** export check at all, relying purely on its button being hidden — gained the guard it was missing. Hosts supplying their own share flow via `customActions` are the intended users of this.
+
+### Tests
+
+- Extended `SensitiveContentTests` (49 XCTest / 96 Swift Testing total, all green): the full 2x2 gate matrix; the default staying `true`; a reveal not overriding a host opt-out; and the regression this exists for — a host with `sensitiveOverlay: nil` can still hide Share.
+- Mutation-tested: dropping `showShareButton` from the AND fails exactly the 3 tests written for it.
+
 ## [2.10.0] - 2026-07-15
 
 ### Fixed (the grid shared the ORIGINAL of a still-shielded item)

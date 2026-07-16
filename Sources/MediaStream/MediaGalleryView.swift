@@ -106,6 +106,30 @@ public struct MediaGalleryConfiguration {
     /// Called when the user toggles shuffle with the in-gallery shuffle button,
     /// so the host can persist the choice. NOT called for the seed.
     public var onShuffleChange: ((Bool) -> Void)?
+    /// Whether the gallery offers its built-in Share affordance at all —
+    /// the slideshow's Share button and the grid's per-item context-menu and
+    /// multi-select Share.
+    ///
+    /// A plain host opt-out, deliberately INDEPENDENT of `sensitiveOverlay`.
+    /// Hiding Share used to require wiring the whole sensitive-content guard,
+    /// which is backwards: "don't offer sharing from this gallery" is a product
+    /// decision, not a content-safety one, and a host that gates nothing had no
+    /// way to express it. Hosts that supply their own share flow via
+    /// `customActions`, or that must not export at all, set this false.
+    ///
+    /// Defaults true — existing hosts are unaffected.
+    public var showShareButton: Bool
+
+    /// Whether a Share affordance should be offered, given whether the item is
+    /// export-blocked by the sensitive-content gate.
+    ///
+    /// The AND of both gates, and the ONLY place the two are combined. Either
+    /// can withhold Share and neither can force it back on: the host's opt-out
+    /// does not care why an item is shielded, and a revealed item does not
+    /// override a host that said no. Pure, so the matrix is unit-testable.
+    public func shouldOfferShareButton(blocksExport: Bool) -> Bool {
+        showShareButton && !blocksExport
+    }
 
     public init(
         slideshowDuration: TimeInterval = 5.0,
@@ -120,7 +144,8 @@ public struct MediaGalleryConfiguration {
         slideshowAutoStart: Bool = false,
         autoPlayVideoOnOpen: Bool = false,
         onLoopModeChange: ((LoopMode) -> Void)? = nil,
-        onShuffleChange: ((Bool) -> Void)? = nil
+        onShuffleChange: ((Bool) -> Void)? = nil,
+        showShareButton: Bool = true
     ) {
         self.slideshowDuration = slideshowDuration
         self.showControls = showControls
@@ -135,6 +160,7 @@ public struct MediaGalleryConfiguration {
         self.autoPlayVideoOnOpen = autoPlayVideoOnOpen
         self.onLoopModeChange = onLoopModeChange
         self.onShuffleChange = onShuffleChange
+        self.showShareButton = showShareButton
     }
 }
 
@@ -687,7 +713,7 @@ public struct MediaGalleryView: View {
                             // sensitive media can never be exfiltrated via the share
                             // sheet. Reappears for non-sensitive items or after a
                             // verified adult reveals the current item.
-                            if !currentItemBlocksExport {
+                            if configuration.shouldOfferShareButton(blocksExport: currentItemBlocksExport) {
                                 MediaStreamGlassButton(action: { shareCurrentItem(); resetControlsTimer() }) {
                                     Image(systemName: "square.and.arrow.up")
                                         .font(.system(size: 14, weight: .semibold))
@@ -1929,6 +1955,13 @@ public struct MediaGalleryView: View {
 
     private func shareCurrentItem() {
         guard let currentItem = currentItem else { return }
+        // Gate the PATH as well as the button, so a caller that reaches this
+        // directly can't bypass either gate. The button above was already
+        // hidden; this is the defense-in-depth half that was missing.
+        guard configuration.shouldOfferShareButton(blocksExport: currentItemBlocksExport) else {
+            print("🛡️ Slideshow share blocked — host opted out or item is shielded")
+            return
+        }
         Task {
             // First try getShareableItem() which should return original format
             if let shareableItem = await currentItem.getShareableItem() {

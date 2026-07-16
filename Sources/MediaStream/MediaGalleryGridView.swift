@@ -665,10 +665,11 @@ public struct MediaGalleryGridView: View {
 
     private var multiSelectToolbar: some View {
         HStack(spacing: 16) {
-            // Built-in share action. Hidden when EVERY selected item is still
-            // shielded — nothing could come out of it. A mixed selection keeps
-            // Share and `shareSelected()` drops the shielded ones.
-            if includeBuiltInShareAction && selectionOffersShare {
+            // Built-in share action. Hidden when the host opted out, or when
+            // EVERY selected item is still shielded — nothing could come out of
+            // it. A mixed selection keeps Share and `shareSelected()` drops the
+            // shielded ones.
+            if includeBuiltInShareAction && configuration.showShareButton && selectionOffersShare {
                 Button(action: {
                     executeBuiltInShareAction()
                 }) {
@@ -763,11 +764,11 @@ public struct MediaGalleryGridView: View {
                         Label("View", systemImage: "eye")
                     }
 
-                    // Share is HIDDEN for a still-shielded item: sharing hands
-                    // over the real original, which is exactly what the blur is
-                    // withholding. `shareItem` re-checks — gate the affordance
-                    // AND the code path.
-                    if !blocksExport(item) {
+                    // Share is HIDDEN when the host opted out, or for a
+                    // still-shielded item: sharing hands over the real original,
+                    // which is exactly what the blur is withholding.
+                    // `shareItem` re-checks — gate the affordance AND the path.
+                    if configuration.shouldOfferShareButton(blocksExport: blocksExport(item)) {
                         Button(action: {
                             Task {
                                 await shareItem(item)
@@ -867,9 +868,14 @@ public struct MediaGalleryGridView: View {
     }
 
     private func shareSelected() {
-        // Shielded items are dropped BEFORE any bytes are resolved — a bulk
-        // share must never become the way to pull out the originals the grid is
-        // blurring. Independent of the toolbar's own gate.
+        // A host that opted out of Share never bulk-shares, whatever reached
+        // here. Shielded items are then dropped BEFORE any bytes are resolved —
+        // a bulk share must never become the way to pull out the originals the
+        // grid is blurring. Independent of the toolbar's own gate.
+        guard configuration.showShareButton else {
+            print("🛡️ ShareSelected: blocked — host opted out of Share")
+            return
+        }
         let shareable = exportableSelection
         print("🔍 ShareSelected: Starting with \(shareable.count) shareable of \(selectedItems.count) selected items")
         guard !shareable.isEmpty else { return }
@@ -992,8 +998,8 @@ public struct MediaGalleryGridView: View {
         // HARD-BLOCK: never resolve the original bytes for a still-shielded
         // item, whatever offered the affordance. Mirrors the slideshow's
         // `currentItemBlocksExport` check on the same signal.
-        guard !blocksExport(item) else {
-            print("🛡️ ShareItem: blocked — item is shielded and not revealed")
+        guard configuration.shouldOfferShareButton(blocksExport: blocksExport(item)) else {
+            print("🛡️ ShareItem: blocked — host opted out or item is shielded")
             return
         }
         print("🔍 ShareItem: Preparing item type: \(item.type)")
