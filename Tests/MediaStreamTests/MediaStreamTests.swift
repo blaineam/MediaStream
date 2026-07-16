@@ -551,6 +551,87 @@ struct MediaGalleryMultiSelectActionTests {
     }
 }
 
+// MARK: - Index Change Notification Tests
+
+/// `onIndexChange` is a CONTRACT: the host is told exactly once, for every
+/// index change, whatever caused it. A host drives per-item UI off it (a
+/// favorite button reflecting the current slide), so a missed notification
+/// shows stale state and a doubled one causes redundant work.
+///
+/// The contract holds structurally: `currentIndex` is @State, every mutation
+/// triggers `.onChange(of: currentIndex)` -> `handleIndexChanged`, and that is
+/// the ONE place that notifies. It broke because the call was instead scattered
+/// across the movement functions — which covered deliberate navigation but
+/// missed the count-clamp and the playback-service sync, both of which also
+/// assign `currentIndex`.
+///
+/// That is a property of where the call SITS, not of any value, so these scan
+/// the source. Ugly, but it pins the invariant that actually regressed; a pure
+/// value test cannot see a missing call site. If MediaGalleryView is ever made
+/// testable without SwiftUI, replace these with a real host-callback spy.
+@Suite("Index Change Notification Tests")
+struct IndexChangeNotificationTests {
+    /// Locate Sources/MediaStream/MediaGalleryView.swift relative to this file.
+    private static func galleryViewSource() throws -> String {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let root = testFile
+            .deletingLastPathComponent()  // MediaStreamTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // package root
+        let src = root
+            .appendingPathComponent("Sources/MediaStream/MediaGalleryView.swift")
+        return try String(contentsOf: src, encoding: .utf8)
+    }
+
+    @Test("onIndexChange is invoked from exactly one place")
+    func singleNotificationSite() throws {
+        let source = try Self.galleryViewSource()
+        let calls = source
+            .split(separator: "\n")
+            .filter { $0.contains("onIndexChange?(") }
+
+        #expect(calls.count == 1, """
+            onIndexChange must be called from exactly ONE site \
+            (handleIndexChanged), found \(calls.count). Scattering the call \
+            across movement functions is what left the count-clamp and \
+            playback-service-sync paths silent, and risks double-notifying for \
+            a single change.
+            """)
+    }
+
+    @Test("The notification site is handleIndexChanged, the index choke point")
+    func notifiesFromChokePoint() throws {
+        let source = try Self.galleryViewSource()
+        guard let fnRange = source.range(of: "private func handleIndexChanged(") else {
+            Issue.record("handleIndexChanged not found — did it get renamed?")
+            return
+        }
+        // The notify call must live inside handleIndexChanged's body: take the
+        // slice from the function to the next func declaration.
+        let after = source[fnRange.lowerBound...]
+        let nextFn = after.range(of: "\n    private func ", range: after.index(after.startIndex, offsetBy: 1)..<after.endIndex)
+        let body = nextFn.map { String(after[..<$0.lowerBound]) } ?? String(after)
+
+        #expect(body.contains("onIndexChange?("), """
+            onIndexChange must fire from handleIndexChanged — the single \
+            function every currentIndex mutation reaches via \
+            .onChange(of: currentIndex). Firing anywhere else cannot be \
+            exhaustive.
+            """)
+    }
+
+    @Test("handleIndexChanged is wired to currentIndex changes")
+    func chokePointIsWiredToState() throws {
+        let source = try Self.galleryViewSource()
+        // Without this wiring the notification never fires at all.
+        #expect(source.contains(".onChange(of: currentIndex)"), """
+            .onChange(of: currentIndex) is the mechanism that makes \
+            handleIndexChanged exhaustive. Removing it silently breaks every \
+            host's index tracking.
+            """)
+    }
+}
+
 // MARK: - Index Bounds Tests
 
 @Suite("Index Bounds Tests")

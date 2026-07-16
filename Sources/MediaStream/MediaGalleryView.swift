@@ -934,7 +934,9 @@ public struct MediaGalleryView: View {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         currentIndex = fullIndex
                     }
-                    onIndexChange?(fullIndex)
+                    // No onIndexChange here — assigning currentIndex above
+                    // routes through handleIndexChanged, which fires it. Calling
+                    // it here too would notify the host twice for one change.
                 }
             } else if userInfo["restart"] as? Bool == true {
                 // Restart current item
@@ -1587,6 +1589,23 @@ public struct MediaGalleryView: View {
 
     private func handleIndexChanged(_ newIndex: Int) {
         autoLoopApplied = false
+        // THE index-change notification, fired from the one place every index
+        // change funnels through (`.onChange(of: currentIndex)`).
+        //
+        // It was previously called ad-hoc from four movement functions
+        // (nextItem, nextItemAfterVideoCompletion, previousItem, the
+        // remote-command handler). Those cover deliberate navigation, but not
+        // every way the index actually moves: the count-change CLAMP and the
+        // playback-service SYNC both assign `currentIndex` and notified nobody,
+        // so a host driving per-item UI off this — say a favorite button
+        // reflecting the current slide — silently went stale whenever the index
+        // moved for either of those reasons.
+        //
+        // Firing from the choke point instead makes the contract simple and
+        // total: the host is told exactly once, for every change, whatever
+        // caused it. The four ad-hoc calls are gone; they all assign
+        // `currentIndex`, so they still notify — through here.
+        onIndexChange?(newIndex)
         checkAndHandleVideo()
         loadCaption()
         resetControlsTimer()
@@ -1811,8 +1830,8 @@ public struct MediaGalleryView: View {
             currentIndex = newIndex
         }
 
-        // Notify parent of index change
-        onIndexChange?(currentIndex)
+        // Notification happens in handleIndexChanged — assigning currentIndex
+        // above routes through it. Calling it here too would double-notify.
 
         if isSlideshowPlaying {
             scheduleNextItemTimer()
@@ -1880,8 +1899,8 @@ public struct MediaGalleryView: View {
             currentIndex = newIndex
         }
 
-        // Notify parent of index change
-        onIndexChange?(currentIndex)
+        // Notification happens in handleIndexChanged — assigning currentIndex
+        // above routes through it. Calling it here too would double-notify.
 
         if isSlideshowPlaying {
             scheduleNextItemTimer()
@@ -1931,8 +1950,8 @@ public struct MediaGalleryView: View {
             currentIndex = newIndex
         }
 
-        // Notify parent of index change
-        onIndexChange?(currentIndex)
+        // Notification happens in handleIndexChanged — assigning currentIndex
+        // above routes through it. Calling it here too would double-notify.
 
         if isSlideshowPlaying {
             scheduleNextItemTimer()

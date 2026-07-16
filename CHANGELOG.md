@@ -2,6 +2,19 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.12.0] - 2026-07-16
+
+### Fixed (onIndexChange missed index changes it didn't cause)
+
+- **The host's index tracking silently went stale**: `onIndexChange` was invoked ad-hoc from the four *movement* functions — `nextItem()`, `previousItem()`, `nextItemAfterVideoCompletion()`, and the remote-command handler. That covers deliberate navigation, but it is not every way `currentIndex` actually moves: the **count-change clamp** (`.onChange(of: mediaItems.count)` → `clampedIndex`) and the **playback-service sync** (matching the service's current item back to the full list) both assign `currentIndex` and notified nobody. A host driving per-item UI off this callback — the motivating case is a Share/favorite-style action button whose icon must reflect the current slide, since `MediaGalleryAction.icon` is a fixed `String` and can only change when the host re-renders — showed **stale state** whenever the index moved for either of those reasons.
+- **Now fired from the choke point, exactly once.** `currentIndex` is `@State`, so every mutation already funnels through `.onChange(of: currentIndex)` → `handleIndexChanged`. The notification moves there and the four scattered calls are removed: they all assign `currentIndex`, so they still notify — through the one path. The contract is now total and unambiguous: **the host is told exactly once, for every index change, whatever caused it.**
+- **No API change.** `onIndexChange` keeps its signature and meaning; it simply fires when it always should have. Hosts already using it need no change and will start seeing the notifications they were missing.
+
+### Tests
+
+- Added `IndexChangeNotificationTests` (99 total, all green): the call site is unique, it lives in `handleIndexChanged`, and `handleIndexChanged` is wired to `.onChange(of: currentIndex)`.
+- These scan the source rather than a value, which is unusual and deliberate — the invariant is *where the call sits*, and a value test cannot see a **missing** call site. Mutation-tested both ways: restoring a scattered call (double-notify) and deleting the notification (the original bug) each fail.
+
 ## [2.11.0] - 2026-07-15
 
 ### Added (hiding Share no longer requires wiring the sensitive-content guard)
