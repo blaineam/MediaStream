@@ -2,6 +2,24 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.13.0] - 2026-07-18
+
+### Fixed (a toggled-on caption vanished with the auto-hiding controls)
+
+- **The caption was trapped inside the controls overlay**: in `MediaGalleryView` the media caption was rendered *inside* the same VStack as the transport chrome, gated by `configuration.showControls && showControls && !mediaItems.isEmpty && !shouldBulkBlock`. So even after the user explicitly toggled the caption on with the caption button, the moment the controls auto-hid on idle the caption went with them. The user asked for the opposite: once the caption is on, it **stays** until they toggle it off.
+- **The caption is now its own layer, decoupled from the controls timer.** It moved out of the controls-gated VStack onto a separate bottom-aligned layer on the same container, and renders from a single pure gate — `MediaGalleryView.shouldShowCaption(showCaption:caption:shouldBulkBlock:)` — that depends only on the user's toggle and whether the slide has a caption, **not** on `showControls`. The caption toggle **button** stays where it was (inside the controls); the user brings the controls back to switch it off. A fixed bottom inset (`captionBottomInset`, mirroring the transport row's composition) keeps it in the same on-screen spot whether or not the controls are visible.
+- **Content-safety gate preserved.** The old gate's `!shouldBulkBlock` also protected the caption from showing over a bulk-blocked gallery; `shouldShowCaption` carries that through, so when a whole-gallery block owns the screen the caption is suppressed too. An **individually** shielded item is intentionally *not* newly gated — the transport controls (and the caption toggle) already show for that case, the caption is host-authored text rather than media bytes, so behavior there is unchanged and no shielded item's original bytes are exposed.
+- **The toggle now persists across slides.** `loadCaption()` previously reset `showCaption = false` whenever a slide had no caption (or the index went out of range), so swiping dismissed the caption too. It now clears only the caption *text* (`currentCaption`) and preserves the user's `showCaption` choice: a caption-less slide simply shows nothing and the caption reappears automatically on the next captioned slide, whose text `loadCaption()` reloads into `currentCaption`. Persistence is across **slides within a session**; opening a fresh gallery still starts with the caption off (`showCaption` is `@State` defaulting to false) — left as-is, as changing it would be more invasive than the requirement.
+
+### Changed
+
+- **`MediaGallery.version` corrected to `2.13.0`.** It had been stuck at a stale `2.7.3` and had not tracked the git tags for several releases (2.8.0 through 2.12.0); it now matches this release.
+
+### Tests
+
+- Added `CaptionVisibilityTests` (105 total, all green) over the extracted `shouldShowCaption` gate: shows when toggled on with a caption present and not bulk blocked; hidden when toggled off; hidden when there is no caption; suppressed while bulk blocked; an empty-string caption still counts as present. Slide-persistence is a property of `loadCaption()` (SwiftUI-bound, not runnable headless), so — as `IndexChangeNotificationTests` does for its invariant — a source scan asserts `loadCaption` never resets `showCaption`.
+- Mutation-tested each: dropping the `showCaption`, the caption-presence, and the `!shouldBulkBlock` clause each fails exactly its test; re-adding the `showCaption = false` reset to `loadCaption` fails the persistence test. Source compatibility verified: the previous release's test suite, unmodified, still compiles and passes against these sources.
+
 ## [2.12.0] - 2026-07-16
 
 ### Fixed (onIndexChange missed index changes it didn't cause)

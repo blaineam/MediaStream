@@ -448,6 +448,37 @@ public struct MediaGalleryView: View {
         currentOverlayVerdict.isShielded
     }
 
+    /// Pure decision for whether the media caption should render, decoupled from
+    /// the auto-hiding transport controls. The caption is a host-authored text
+    /// description (not media bytes), shown ONLY when the user has toggled it on
+    /// and the current slide actually has one. It is suppressed while the whole
+    /// gallery is bulk blocked — in that state the transport chrome is suppressed
+    /// too and a single block owns the screen, so a floating caption would be
+    /// inconsistent. An INDIVIDUALLY shielded item is intentionally NOT gated
+    /// here: the transport controls (and their caption toggle) already show for
+    /// that case, so the caption stays available exactly where it always was.
+    static func shouldShowCaption(showCaption: Bool, caption: String?, shouldBulkBlock: Bool) -> Bool {
+        showCaption && caption != nil && !shouldBulkBlock
+    }
+
+    /// Bottom inset that places the decoupled caption just ABOVE the transport
+    /// controls' footprint — the same spot it held when it lived inside the
+    /// controls VStack — WHETHER OR NOT the controls are currently visible. It
+    /// mirrors that VStack's bottom composition: the transport row's bottom
+    /// padding (140 for video/audio to clear the media transport, else 20), an
+    /// approximate transport-row height, and the caption's own 20pt gap above it.
+    /// The row height is an estimate (the row is laid out by SwiftUI at runtime),
+    /// so the on-screen match is approximate — but the position no longer depends
+    /// on the controls being on screen.
+    private var captionBottomInset: CGFloat {
+        let isAVItem = mediaItems.indices.contains(safeIndex)
+            && (mediaItems[safeIndex].type == .video || mediaItems[safeIndex].type == .audio)
+        let controlsRowBottomPadding: CGFloat = isAVItem ? 140 : 20
+        let approxControlsRowHeight: CGFloat = 56
+        let captionGapAboveControls: CGFloat = 20
+        return controlsRowBottomPadding + approxControlsRowHeight + captionGapAboveControls
+    }
+
     public var body: some View {
         ZStack {
             configuration.backgroundColor
@@ -744,16 +775,32 @@ public struct MediaGalleryView: View {
 
                     Spacer()
 
-                    // Caption above controls
-                    if let caption = currentCaption, showCaption {
-                        captionView(caption: caption)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                            .padding(.bottom, 20)
-                    }
-
                     // Controls at bottom with extra padding for video/audio controls
                     controlsView
                         .padding(.bottom, (mediaItems[safeIndex].type == .video || mediaItems[safeIndex].type == .audio) ? 140 : 20)
+                }
+                .allowsHitTesting(true)
+            }
+
+            // CAPTION — DECOUPLED from the auto-hiding controls. Once the user
+            // toggles the caption on (the toggle still lives inside the controls,
+            // `text.bubble`), it STAYS visible on its own layer until they toggle
+            // it off, independent of the idle controls timer. It is pinned to the
+            // BOTTOM at `captionBottomInset` so it lands in the same place it held
+            // when it sat above the transport row — whether or not the controls
+            // are currently showing. Visibility is the single pure gate
+            // `shouldShowCaption(...)`, which also suppresses the caption while the
+            // gallery is bulk blocked (mirroring the controls above, which are
+            // likewise suppressed then). An individually shielded item is not
+            // gated here — the caption is text, not media bytes, and the controls
+            // already show for that case, so behavior is unchanged there.
+            if Self.shouldShowCaption(showCaption: showCaption, caption: currentCaption, shouldBulkBlock: shouldBulkBlock),
+               let caption = currentCaption {
+                VStack(spacing: 0) {
+                    Spacer()
+                    captionView(caption: caption)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.bottom, captionBottomInset)
                 }
                 .allowsHitTesting(true)
             }
@@ -1634,8 +1681,11 @@ public struct MediaGalleryView: View {
         // Capture values to avoid referencing self in detached task
         let index = safeIndex
         guard mediaItems.indices.contains(index) else {
+            // Clear the caption TEXT, but PERSIST the user's showCaption choice:
+            // the toggle survives slide changes, so a captioned slide reached
+            // later re-shows automatically. A slide with no caption simply shows
+            // nothing (currentCaption == nil), per `shouldShowCaption`.
             currentCaption = nil
-            showCaption = false
             return
         }
         let item = mediaItems[index]
@@ -1657,8 +1707,11 @@ public struct MediaGalleryView: View {
                 if let caption = caption {
                     self.currentCaption = caption
                 } else {
+                    // No caption on this slide: clear the TEXT only. The user's
+                    // showCaption choice persists across slides, so swiping past a
+                    // caption-less slide no longer dismisses the caption — it
+                    // reappears on the next slide that has one.
                     self.currentCaption = nil
-                    self.showCaption = false
                 }
             }
         }

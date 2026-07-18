@@ -632,6 +632,89 @@ struct IndexChangeNotificationTests {
     }
 }
 
+// MARK: - Caption Visibility Tests
+
+/// The media caption is DECOUPLED from the auto-hiding transport controls: once
+/// the user toggles it on it stays until they toggle it off, regardless of the
+/// idle controls timer. `MediaGalleryView.shouldShowCaption(...)` is the single
+/// pure gate the view renders from — these tests pin its truth table, including
+/// the content-safety decision (suppressed while the gallery is bulk blocked).
+@Suite("Caption Visibility Tests")
+struct CaptionVisibilityTests {
+    @Test("Shows when toggled on, a caption is present, and not bulk blocked")
+    func showsWhenOnPresentAndUnblocked() {
+        #expect(MediaGalleryView.shouldShowCaption(
+            showCaption: true, caption: "A description", shouldBulkBlock: false) == true)
+    }
+
+    @Test("Hidden when the user has NOT toggled it on")
+    func hiddenWhenToggledOff() {
+        #expect(MediaGalleryView.shouldShowCaption(
+            showCaption: false, caption: "A description", shouldBulkBlock: false) == false)
+    }
+
+    @Test("Hidden when the current slide has NO caption")
+    func hiddenWhenNoCaption() {
+        #expect(MediaGalleryView.shouldShowCaption(
+            showCaption: true, caption: nil, shouldBulkBlock: false) == false)
+        // Toggled on but caption-less: nothing renders (this is exactly the
+        // persist-across-slides case — the choice stays true, the text is gone).
+    }
+
+    @Test("Suppressed while the gallery is BULK BLOCKED, even when toggled on")
+    func suppressedWhenBulkBlocked() {
+        // Content-safety decision: during a whole-gallery bulk block the transport
+        // chrome is suppressed and a single block owns the screen, so the caption
+        // is suppressed too. An INDIVIDUALLY shielded item is intentionally not a
+        // parameter here — the caption is text (not media bytes) and the controls
+        // still show for that case, so behavior there is unchanged.
+        #expect(MediaGalleryView.shouldShowCaption(
+            showCaption: true, caption: "A description", shouldBulkBlock: true) == false)
+    }
+
+    @Test("An empty-string caption still counts as present")
+    func emptyStringCaptionIsPresent() {
+        // The gate keys on presence (non-nil), matching the caption toggle button,
+        // which appears whenever `currentCaption != nil` regardless of contents.
+        #expect(MediaGalleryView.shouldShowCaption(
+            showCaption: true, caption: "", shouldBulkBlock: false) == true)
+    }
+
+    /// Persistence across SLIDES is a property of `loadCaption()`: it clears the
+    /// caption TEXT on a slide change but must NOT reset the user's `showCaption`
+    /// choice, so a captioned slide reached later re-shows automatically. That
+    /// behavior lives in a SwiftUI-bound method that can't run headless, so — as
+    /// the IndexChangeNotificationTests do for their invariant — this scans the
+    /// source for the regression: `loadCaption` must never assign showCaption.
+    @Test("Slide change preserves showCaption (loadCaption never resets it)")
+    func slideChangePreservesShowCaption() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let root = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let src = root.appendingPathComponent("Sources/MediaStream/MediaGalleryView.swift")
+        let source = try String(contentsOf: src, encoding: .utf8)
+
+        guard let fnRange = source.range(of: "private func loadCaption(") else {
+            Issue.record("loadCaption not found — did it get renamed?")
+            return
+        }
+        let after = source[fnRange.lowerBound...]
+        let nextFn = after.range(
+            of: "\n    private func ",
+            range: after.index(after.startIndex, offsetBy: 1)..<after.endIndex)
+        let body = nextFn.map { String(after[..<$0.lowerBound]) } ?? String(after)
+
+        #expect(!body.contains("showCaption = false"), """
+            loadCaption must NOT reset showCaption on a slide change — doing so \
+            dismisses the caption every time the user swipes, the annoyance this \
+            fix removes. It may clear currentCaption (the TEXT); the user's \
+            showCaption CHOICE persists across slides.
+            """)
+    }
+}
+
 // MARK: - Index Bounds Tests
 
 @Suite("Index Bounds Tests")
