@@ -1195,6 +1195,58 @@ struct VideoPlayerRoutingTests {
     }
 }
 
+// MARK: - Navigation Suppression Tests
+
+@Suite("Navigation Suppression Tests")
+struct NavigationSuppressionTests {
+    // Scrubbing a video jumped the gallery to the next or previous item, even
+    // for a small drag nowhere near the end of the track.
+    //
+    // Scrubbing is a horizontal drag, so it also feeds the simultaneous
+    // navigation gesture. The guard consulted the live "controls are being
+    // interacted with" flag at drag-END — but the Slider clears that flag from
+    // onEditingChanged(false) on touch-up, the same instant the drag ends, with
+    // no ordering guarantee between them. Whenever the slider ran first, the
+    // guard read false and paged the gallery.
+    //
+    // The fix records that the flag was true at any point DURING the drag,
+    // which cannot be raced away.
+    @Test("A scrub does not page the gallery even after the controls flag clears")
+    func scrubDoesNotNavigate() {
+        // The exact race: this drag overlapped a scrub, but by drag-end the
+        // slider has already set isInteracting back to false.
+        #expect(MediaGalleryView.shouldNavigate(
+            isZoomed: false,
+            isVRSphere: false,
+            touchedControls: true,
+            controlsInteracting: false
+        ) == false)
+    }
+
+    @Test("An ordinary swipe on the media still pages")
+    func plainSwipeNavigates() {
+        #expect(MediaGalleryView.shouldNavigate(
+            isZoomed: false,
+            isVRSphere: false,
+            touchedControls: false,
+            controlsInteracting: false
+        ) == true)
+    }
+
+    @Test("Zoom, VR and an in-flight control interaction each suppress paging")
+    func otherSuppressors() {
+        #expect(MediaGalleryView.shouldNavigate(
+            isZoomed: true, isVRSphere: false,
+            touchedControls: false, controlsInteracting: false) == false)
+        #expect(MediaGalleryView.shouldNavigate(
+            isZoomed: false, isVRSphere: true,
+            touchedControls: false, controlsInteracting: false) == false)
+        #expect(MediaGalleryView.shouldNavigate(
+            isZoomed: false, isVRSphere: false,
+            touchedControls: false, controlsInteracting: true) == false)
+    }
+}
+
 // MARK: - Swipe Navigation Tests
 
 @Suite("Swipe Navigation Tests")

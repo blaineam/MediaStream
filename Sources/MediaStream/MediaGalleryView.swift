@@ -182,6 +182,9 @@ public struct MediaGalleryView: View {
     @State private var isSlideshowPlaying = false
     @State private var isZoomed = false
     @State private var isRequestingSlideshowVerification = false
+    /// Set while a drag overlaps a controls interaction (scrubbing), so that same
+    /// drag cannot also page the gallery. See the navigation DragGesture.
+    @State private var dragTouchedControls = false
 
     /// Observe the sensitive overlay controller so the slideshow reveal button +
     /// blur re-render the instant a verified adult reveals (and reset on dismiss).
@@ -253,6 +256,31 @@ public struct MediaGalleryView: View {
         )
     }
     #endif
+
+    /// Whether a finished drag should page the gallery.
+    ///
+    /// Pure so the precedence is testable without a view: the gesture closure
+    /// only supplies the inputs.
+    ///
+    /// `touchedControls` is the fix for scrubbing paging the gallery. Scrubbing
+    /// is a horizontal drag, so it also reaches the simultaneous navigation
+    /// gesture. Consulting only the live `controlsInteracting` flag at drag-end
+    /// was a race: the Slider clears it from onEditingChanged(false) on touch-up,
+    /// the same instant the drag ends, and whichever ran first decided whether
+    /// the gallery jumped. `touchedControls` records that the flag was seen true
+    /// at any point DURING this drag, which cannot be raced away.
+    static func shouldNavigate(
+        isZoomed: Bool,
+        isVRSphere: Bool,
+        touchedControls: Bool,
+        controlsInteracting: Bool
+    ) -> Bool {
+        if isZoomed { return false }          // panning a zoomed image
+        if isVRSphere { return false }        // dragging the VR camera
+        if touchedControls { return false }   // this drag was a scrub
+        if controlsInteracting { return false }
+        return true
+    }
 
     /// `currentIndex` clamped to the current `mediaItems` range. The caller can
     /// pass a shorter array on a later update (item deleted) while @State still
@@ -550,10 +578,36 @@ public struct MediaGalleryView: View {
                         // Navigation gesture - horizontal swipes when not zoomed
                         // Disabled for VR items so drag controls the VR camera instead
                         DragGesture(minimumDistance: Self.swipeMinimumDistance)
+                            .onChanged { _ in
+                                // Sample the controls flag DURING the drag, not
+                                // just at its end.
+                                //
+                                // Scrubbing is a horizontal drag, so it also
+                                // feeds this simultaneous navigation gesture. The
+                                // flag is reliably true while a scrub is in
+                                // flight — but the Slider clears it from
+                                // onEditingChanged(false) on touch-up, the same
+                                // instant onEnded fires here, with no ordering
+                                // guarantee between the two. Whenever the slider
+                                // won that race, onEnded read `false` and a scrub
+                                // paged the gallery: the reported "scrubbing a
+                                // little jumps to the next video". Latching
+                                // during the drag cannot lose the race, because
+                                // the flag is unambiguously true then.
+                                if MediaControlsInteractionState.shared.isInteracting {
+                                    dragTouchedControls = true
+                                }
+                            }
                             .onEnded { value in
-                                guard !isZoomed else { return }
-                                guard !isCurrentItemVRSphere else { return }
-                                guard !MediaControlsInteractionState.shared.isInteracting else { return }
+                                let touchedControls = dragTouchedControls
+                                dragTouchedControls = false
+                                guard Self.shouldNavigate(
+                                    isZoomed: isZoomed,
+                                    isVRSphere: isCurrentItemVRSphere,
+                                    touchedControls: touchedControls,
+                                    controlsInteracting:
+                                        MediaControlsInteractionState.shared.isInteracting
+                                ) else { return }
                                 guard let direction = Self.swipeDirection(for: value) else { return }
                                 if direction < 0 {
                                     nextItem()
