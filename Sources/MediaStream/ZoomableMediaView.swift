@@ -2334,7 +2334,24 @@ struct ZoomableMediaView: View {
             // Capture the type BEFORE loading — for unresolved webp/heic, loadImage()
             // downloads the data and resolves _animationStorage as a side effect.
             let preloadType = mediaItem.type
-            if let loadedImage = await mediaItem.loadImage() {
+            // Retry a transient load miss.
+            //
+            // loadImage() returns nil on a network blip, a cancelled fetch, or a
+            // momentary decode failure. The old code then fell straight through:
+            // image stayed nil, hasLoadedMedia stayed false, and the defer cleared
+            // isLoading — so the slide showed pure black with no spinner and no
+            // retry. That is the rare "a slide is black, but reopening the viewer
+            // on that same thumbnail loads it fine" report: reopening simply hit a
+            // fresh load outside the transient window. A few backed-off retries do
+            // the same thing here without the user having to intervene.
+            var loadedImage = await mediaItem.loadImage()
+            var loadAttempt = 0
+            while loadedImage == nil && loadAttempt < 3 && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000 * UInt64(loadAttempt + 1))
+                loadedImage = await mediaItem.loadImage()
+                loadAttempt += 1
+            }
+            if let loadedImage {
                 // If an unresolved format just resolved to animated during loadImage(),
                 // switch to animated WKWebView display instead of showing a static frame.
                 if preloadType == .image && mediaItem.type == .animatedImage,
