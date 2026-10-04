@@ -83,7 +83,7 @@ public enum VRProjection: String, CaseIterable, Codable, Sendable {
         case .fisheye180: return "Fisheye 180\u{00B0}"
         case .fisheyeSBS: return "3D SBS Fisheye"
         case .fisheyeTB: return "3D TB Fisheye"
-        case .flat: return "2D"
+        case .flat: return String(localized: "2D", bundle: .module)
         }
     }
 
@@ -103,7 +103,7 @@ public enum VRProjection: String, CaseIterable, Codable, Sendable {
         case .fisheye180: return "FE 180"
         case .fisheyeSBS: return "FE SBS"
         case .fisheyeTB: return "FE TB"
-        case .flat: return "2D"
+        case .flat: return String(localized: "2D", bundle: .module)
         }
     }
 }

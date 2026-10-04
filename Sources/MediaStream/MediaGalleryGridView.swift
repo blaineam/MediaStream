@@ -16,6 +16,18 @@ public enum MediaFilter: String, CaseIterable {
     case audio = "Audio"
     case animated = "Animated"
 
+    /// The user-facing name, localized from MediaStream's bundle. `rawValue`
+    /// stays the stable English identifier.
+    public var localizedName: String {
+        switch self {
+        case .all: return String(localized: "All", bundle: .module)
+        case .images: return String(localized: "Images", bundle: .module)
+        case .videos: return String(localized: "Videos", bundle: .module)
+        case .audio: return String(localized: "Audio", bundle: .module)
+        case .animated: return String(localized: "Animated", bundle: .module)
+        }
+    }
+
     func matches(_ type: MediaType) -> Bool {
         switch self {
         case .all:
@@ -453,14 +465,14 @@ public struct MediaGalleryGridView: View {
                             Button(action: {
                                 refreshCache()
                             }) {
-                                Label("Refresh", systemImage: "arrow.clockwise")
+                                Label(String(localized: "Refresh", bundle: .module), systemImage: "arrow.clockwise")
                             }
                             .buttonStyle(.bordered)
 
                             Button(action: {
                                 isMultiSelectMode = true
                             }) {
-                                Label("Select", systemImage: "checkmark.circle")
+                                Label(String(localized: "Select", bundle: .module), systemImage: "checkmark.circle")
                             }
                             .buttonStyle(.bordered)
                         }
@@ -488,19 +500,19 @@ public struct MediaGalleryGridView: View {
             }
         }
         #if os(iOS)
-        .navigationTitle(isMultiSelectMode ? "\(selectedItems.count) Selected" : "Media Gallery")
+        .navigationTitle(isMultiSelectMode ? String(localized: "\(selectedItems.count) Selected", bundle: .module) : String(localized: "Media Gallery", bundle: .module))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
                 if isMultiSelectMode {
-                    Button("Cancel") {
+                    Button(String(localized: "Cancel", bundle: .module)) {
                         exitMultiSelectMode()
                     }
                 } else {
                     Button(action: {
                         isMultiSelectMode = true
                     }) {
-                        Label("Select", systemImage: "checkmark.circle")
+                        Label(String(localized: "Select", bundle: .module), systemImage: "checkmark.circle")
                     }
                 }
             }
@@ -517,12 +529,12 @@ public struct MediaGalleryGridView: View {
                 if !shouldBulkBlock {
                     HStack(spacing: 12) {
                         if isMultiSelectMode {
-                            Button("Select All") {
+                            Button(String(localized: "Select All", bundle: .module)) {
                                 selectAll()
                             }
                             .disabled(selectedItems.count == filteredItems.count)
 
-                            Button("Clear") {
+                            Button(String(localized: "Clear", bundle: .module)) {
                                 clearSelection()
                             }
                             .disabled(selectedItems.isEmpty)
@@ -533,7 +545,7 @@ public struct MediaGalleryGridView: View {
                                 headerProvider: { url in await MediaStreamConfiguration.headersAsync(for: url) }
                             )
 
-                            Button("Done") {
+                            Button(String(localized: "Done", bundle: .module)) {
                                 onDismiss()
                             }
                         }
@@ -626,11 +638,12 @@ public struct MediaGalleryGridView: View {
                 Image(systemName: "eye.slash.fill")
                     .font(.largeTitle)
                     .foregroundStyle(.secondary)
-                Text("Sensitive Content")
+                Text("Sensitive Content", bundle: .module)
                     .font(.headline)
                 Text(canReveal
                      ? "This gallery contains sensitive media. Tap Reveal All to view it."
-                     : "This gallery contains sensitive media and can't be revealed on this account.")
+                     : "This gallery contains sensitive media and can't be revealed on this account.",
+                     bundle: .module)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -639,7 +652,7 @@ public struct MediaGalleryGridView: View {
                     Button {
                         overlay.revealAllAction()
                     } label: {
-                        Label("Reveal All", systemImage: "eye.fill")
+                        Label(String(localized: "Reveal All", bundle: .module), systemImage: "eye.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("sca.bulk.revealAll")
@@ -652,7 +665,7 @@ public struct MediaGalleryGridView: View {
             VStack {
                 HStack {
                     Spacer()
-                    Button("Done") { onDismiss() }
+                    Button(String(localized: "Done", bundle: .module)) { onDismiss() }
                         .buttonStyle(.borderedProminent)
                         .padding()
                         .accessibilityIdentifier("sca.bulk.done")
@@ -673,7 +686,7 @@ public struct MediaGalleryGridView: View {
                 Button(action: {
                     executeBuiltInShareAction()
                 }) {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                    Label(String(localized: "Share", bundle: .module), systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.plain)
             }
@@ -703,7 +716,7 @@ public struct MediaGalleryGridView: View {
                 HStack(spacing: 8) {
                     ForEach(MediaFilter.allCases, id: \.self) { filter in
                         FilterChip(
-                            title: filter.rawValue,
+                            title: filter.localizedName,
                             isSelected: selectedFilter == filter
                         ) {
                             selectedFilter = filter
@@ -761,7 +774,7 @@ public struct MediaGalleryGridView: View {
                             onSelect(originalIndex)
                         }
                     }) {
-                        Label("View", systemImage: "eye")
+                        Label(String(localized: "View", bundle: .module), systemImage: "eye")
                     }
 
                     // Share is HIDDEN when the host opted out, or for a
@@ -774,7 +787,7 @@ public struct MediaGalleryGridView: View {
                                 await shareItem(item)
                             }
                         }) {
-                            Label("Share", systemImage: "square.and.arrow.up")
+                            Label(String(localized: "Share", bundle: .module), systemImage: "square.and.arrow.up")
                         }
                     }
 
@@ -799,26 +812,26 @@ public struct MediaGalleryGridView: View {
     // macOS multi-select control bar (replaces NavigationStack toolbar)
     private var multiSelectControlBar: some View {
         HStack(spacing: 16) {
-            Button("Cancel") {
+            Button(String(localized: "Cancel", bundle: .module)) {
                 exitMultiSelectMode()
             }
             .buttonStyle(.bordered)
 
             Spacer()
 
-            Text("\(selectedItems.count) Selected")
+            Text("\(selectedItems.count) Selected", bundle: .module)
                 .font(.headline)
 
             Spacer()
 
             HStack(spacing: 12) {
-                Button("Select All") {
+                Button(String(localized: "Select All", bundle: .module)) {
                     selectAll()
                 }
                 .buttonStyle(.bordered)
                 .disabled(selectedItems.count == filteredItems.count)
 
-                Button("Clear Selection") {
+                Button(String(localized: "Clear Selection", bundle: .module)) {
                     clearSelection()
                 }
                 .buttonStyle(.bordered)
@@ -1330,7 +1343,7 @@ struct LazyThumbnailView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: hasAudio ? "speaker.wave.2.fill" : "speaker.slash.fill")
                                     .font(.caption2)
-                                Text(hasAudio ? "Audio" : "Silent")
+                                Text(hasAudio ? "Audio" : "Silent", bundle: .module)
                                     .font(.caption2)
                                     .fontWeight(.medium)
                             }
@@ -1407,7 +1420,7 @@ struct LazyThumbnailView: View {
                 Button {
                     overlay.revealKey(key)
                 } label: {
-                    Text("Show Anyway")
+                    Text("Show Anyway", bundle: .module)
                         .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -1426,7 +1439,7 @@ struct LazyThumbnailView: View {
                         if verified { overlay.revealAllAction() }
                     }
                 } label: {
-                    Text(isRequestingVerification ? "…" : "Verify Age")
+                    Text(isRequestingVerification ? "…" : "Verify Age", bundle: .module)
                         .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)

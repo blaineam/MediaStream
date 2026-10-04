@@ -659,11 +659,11 @@ enum DownloadError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidDestination:
-            return "Invalid download destination"
+            return String(localized: "Invalid download destination", bundle: .module)
         case .httpError(let code):
-            return "HTTP error: \(code)"
+            return String(localized: "HTTP error: \(code)", bundle: .module)
         case .cancelled:
-            return "Download cancelled"
+            return String(localized: "Download cancelled", bundle: .module)
         }
     }
 }

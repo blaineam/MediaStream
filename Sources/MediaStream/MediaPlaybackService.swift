@@ -54,9 +54,9 @@ public enum PlaybackLoopMode: Int, CaseIterable, Sendable {
 
     public var description: String {
         switch self {
-        case .off: return "Loop Off"
-        case .all: return "Loop All"
-        case .one: return "Loop One"
+        case .off: return String(localized: "Loop Off", bundle: .module)
+        case .all: return String(localized: "Loop All", bundle: .module)
+        case .one: return String(localized: "Loop One", bundle: .module)
         }
     }
 
@@ -815,7 +815,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         // For video, use the legacy player
         guard let url = await mediaItem.loadVideoURL() else {
-            playbackState = .failed("Could not load media URL")
+            playbackState = .failed(String(localized: "Could not load media URL", bundle: .module))
             return
         }
 
@@ -1330,7 +1330,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                     self?.duration = item.duration.seconds.isFinite ? item.duration.seconds : 0
                     self?.updateNowPlayingInfo()
                 case .failed:
-                    self?.playbackState = .failed(item.error?.localizedDescription ?? "Unknown error")
+                    self?.playbackState = .failed(item.error?.localizedDescription ?? String(localized: "Unknown error", bundle: .module))
                 default:
                     break
                 }

@@ -320,7 +320,7 @@ public enum SensitiveBlurRenderer {
         ctx.strokePath()
 
         guard drawLabel else { return }
-        let text = (isError ? "Couldn't Check" : "Sensitive") as NSString
+        let text = (isError ? String(localized: "Couldn't Check", bundle: .module) : String(localized: "Sensitive", bundle: .module)) as NSString
         let fontSize = side * 0.075
         #if canImport(UIKit)
         let attrs: [NSAttributedString.Key: Any] = [
@@ -715,7 +715,7 @@ struct SensitiveBlurOverlayModifier: ViewModifier {
                 Image(systemName: isError ? "exclamationmark.triangle.fill" : "eye.slash.fill")
                     .font(.title3)
                     .foregroundStyle(.white)
-                Text(isError ? "Couldn't Check" : "Sensitive")
+                Text(isError ? "Couldn't Check" : "Sensitive", bundle: .module)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white)
             }
@@ -814,18 +814,18 @@ public struct SensitiveContentShieldModifier<P: SensitiveContentPolicy>: ViewMod
                     Image(systemName: presentation.isErrorState ? "exclamationmark.triangle.fill" : "eye.slash.fill")
                         .font(.title2)
                         .foregroundColor(.secondary)
-                    Text(presentation.isErrorState ? "Couldn't Check Media" : "Sensitive Content")
+                    Text(presentation.isErrorState ? "Couldn't Check Media" : "Sensitive Content", bundle: .module)
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                     if presentation.showsRevealButton {
-                        Button("Show Anyway") { policy.reveal(key) }
+                        Button(String(localized: "Show Anyway", bundle: .module)) { policy.reveal(key) }
                             .font(.caption2.weight(.semibold))
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                     }
                     if presentation.showsVerifyAgeButton {
-                        Text("Age not verified — verify to enable reveal")
+                        Text("Age not verified — verify to enable reveal", bundle: .module)
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -835,7 +835,7 @@ public struct SensitiveContentShieldModifier<P: SensitiveContentPolicy>: ViewMod
                             if isRequestingVerification {
                                 ProgressView().controlSize(.small)
                             } else {
-                                Text("Verify Age to Reveal")
+                                Text("Verify Age to Reveal", bundle: .module)
                             }
                         }
                         .font(.caption2.weight(.semibold))
@@ -849,8 +849,8 @@ public struct SensitiveContentShieldModifier<P: SensitiveContentPolicy>: ViewMod
         }
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onTapGesture {}
-        .alert("Age Verification", isPresented: $showVerificationFeedback) {
-            Button("OK") { policy.clearVerificationOutcome() }
+        .alert(String(localized: "Age Verification", bundle: .module), isPresented: $showVerificationFeedback) {
+            Button(String(localized: "OK", bundle: .module)) { policy.clearVerificationOutcome() }
         } message: {
             Text(policy.verificationFeedbackMessage ?? "")
         }
@@ -953,16 +953,21 @@ public struct SensitiveBlockCopy: Equatable, Sendable {
     /// Body shown when the surface can't be revealed on this account.
     public var lockedMessage: String
 
+    /// Any argument left `nil` falls back to MediaStream's localized default
+    /// copy (resolved from the package bundle in the user's language).
     public init(
-        title: String = "Sensitive Content",
-        revealMessage: String = "This content contains sensitive media. Tap Reveal to view it.",
-        verifyMessage: String = "Blurred: sensitive content. Verify your age in Settings to reveal it.",
-        lockedMessage: String = "This content contains sensitive media and can't be revealed on this account."
+        title: String? = nil,
+        revealMessage: String? = nil,
+        verifyMessage: String? = nil,
+        lockedMessage: String? = nil
     ) {
-        self.title = title
+        self.title = title ?? String(localized: "Sensitive Content", bundle: .module)
         self.revealMessage = revealMessage
+            ?? String(localized: "This content contains sensitive media. Tap Reveal to view it.", bundle: .module)
         self.verifyMessage = verifyMessage
+            ?? String(localized: "Blurred: sensitive content. Verify your age in Settings to reveal it.", bundle: .module)
         self.lockedMessage = lockedMessage
+            ?? String(localized: "This content contains sensitive media and can't be revealed on this account.", bundle: .module)
     }
 
     /// GENERIC default copy — no "conversation" wording. Used by every host
@@ -1065,7 +1070,7 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
                         // the per-item shields underneath all un-blur together.
                         policy.revealAll()
                     } label: {
-                        Label("Reveal All", systemImage: "eye.fill")
+                        Label(String(localized: "Reveal All", bundle: .module), systemImage: "eye.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
@@ -1077,7 +1082,7 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
                         if isRequestingVerification {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Verify Your Age in Settings", systemImage: "person.badge.shield.checkmark")
+                            Label(String(localized: "Verify Your Age in Settings", bundle: .module), systemImage: "person.badge.shield.checkmark")
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -1090,8 +1095,8 @@ public struct SensitiveSurfaceBlockModifier<P: SensitiveContentPolicy>: ViewModi
         // Touch handling lives on the inset absorbing layer above (so the top
         // header region can pass through). No outer contentShape/onTapGesture
         // here — that would re-capture the whole frame and re-block the header.
-        .alert("Age Verification", isPresented: $showVerificationFeedback) {
-            Button("OK") { policy.clearVerificationOutcome() }
+        .alert(String(localized: "Age Verification", bundle: .module), isPresented: $showVerificationFeedback) {
+            Button(String(localized: "OK", bundle: .module)) { policy.clearVerificationOutcome() }
         } message: {
             Text(policy.verificationFeedbackMessage ?? "")
         }

@@ -103,20 +103,20 @@ public struct MediaDownloadButton: View {
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
         .confirmationDialog(
-            mediaItems.count == 1 ? "Clear Downloaded File" : "Clear Downloaded Media",
+            mediaItems.count == 1 ? String(localized: "Clear Downloaded File", bundle: .module) : String(localized: "Clear Downloaded Media", bundle: .module),
             isPresented: $showClearConfirmation,
             titleVisibility: .visible
         ) {
-            Button(mediaItems.count == 1 ? "Clear Download" : "Clear All Downloads", role: .destructive) {
+            Button(mediaItems.count == 1 ? String(localized: "Clear Download", bundle: .module) : String(localized: "Clear All Downloads", bundle: .module), role: .destructive) {
                 downloadManager.clearDownloads(for: mediaItems)
             }
-            Button("Cancel", role: .cancel) {}
+            Button(String(localized: "Cancel", bundle: .module), role: .cancel) {}
         } message: {
             if mediaItems.count == 1 {
-                Text("This will remove the cached file for this item")
+                Text("This will remove the cached file for this item", bundle: .module)
             } else {
                 let stats = downloadManager.stats
-                Text("This will remove \(stats.fileCount) cached files (\(String(format: "%.1f", stats.diskMB)) MB)")
+                Text("This will remove \(stats.fileCount) cached files (\(String(format: "%.1f", stats.diskMB)) MB)", bundle: .module)
             }
         }
     }
@@ -159,14 +159,14 @@ public struct MediaDownloadButton: View {
         case .partiallyCached:
             let cached = downloadManager.cachedCount(of: mediaItems)
             let total = mediaItems.filter { downloadManager.canCache($0) }.count
-            return "\(cached) of \(total) files cached. Tap to download remaining"
+            return String(localized: "\(cached) of \(total) files cached. Tap to download remaining", bundle: .module)
         case .downloading:
             if let progress = downloadManager.progress {
-                return "Downloading \(progress.completed) of \(progress.total). Tap to cancel"
+                return String(localized: "Downloading \(progress.completed) of \(progress.total). Tap to cancel", bundle: .module)
             }
-            return "Downloading. Tap to cancel"
+            return String(localized: "Downloading. Tap to cancel", bundle: .module)
         case .cached:
-            return "All media cached. Tap to clear downloads"
+            return String(localized: "All media cached. Tap to clear downloads", bundle: .module)
         }
     }
 }

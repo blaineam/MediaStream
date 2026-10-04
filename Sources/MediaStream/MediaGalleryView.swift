@@ -45,9 +45,9 @@ public enum LoopMode: Int, CaseIterable {
 
     var label: String {
         switch self {
-        case .off: return "Loop Off"
-        case .all: return "Loop All"
-        case .one: return "Loop One"
+        case .off: return String(localized: "Loop Off", bundle: .module)
+        case .all: return String(localized: "Loop All", bundle: .module)
+        case .one: return String(localized: "Loop One", bundle: .module)
         }
     }
 
@@ -693,7 +693,7 @@ public struct MediaGalleryView: View {
                     // Top: Slide counter and buttons
                     HStack {
                         // Slide counter on the left
-                        Text("\(safeIndex + 1) / \(mediaItems.count)")
+                        Text("\(safeIndex + 1) / \(mediaItems.count)", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.primary)
                             .padding(.horizontal, 12)
@@ -761,7 +761,7 @@ public struct MediaGalleryView: View {
                                 }) {
                                     if isCurrentItem2DMode {
                                         // 2D mode: show "2D" label, lit
-                                        Text("2D")
+                                        Text("2D", bundle: .module)
                                             .font(.system(size: 13, weight: .bold))
                                             .foregroundStyle(Color.accentColor)
                                     } else {
@@ -1155,7 +1155,7 @@ public struct MediaGalleryView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
 
-            Text("No Media")
+            Text("No Media", bundle: .module)
                 .font(.headline)
                 .foregroundStyle(.primary)
 
@@ -1186,7 +1186,7 @@ public struct MediaGalleryView: View {
                 }
 
             VStack(spacing: 2) {
-                Text("Projection")
+                Text("Projection", bundle: .module)
                     .font(.headline)
                     .foregroundColor(.white)
                     .padding(.bottom, 8)
@@ -1262,11 +1262,12 @@ public struct MediaGalleryView: View {
                 Image(systemName: "eye.slash.fill")
                     .font(.largeTitle)
                     .foregroundStyle(.secondary)
-                Text("Sensitive Content")
+                Text("Sensitive Content", bundle: .module)
                     .font(.headline)
                 Text(canReveal
                      ? "This gallery contains sensitive media. Tap Reveal All to view it."
-                     : "This gallery contains sensitive media and can't be revealed on this account.")
+                     : "This gallery contains sensitive media and can't be revealed on this account.",
+                     bundle: .module)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -1275,7 +1276,7 @@ public struct MediaGalleryView: View {
                     Button {
                         overlay.revealAllAction()
                     } label: {
-                        Label("Reveal All", systemImage: "eye.fill")
+                        Label(String(localized: "Reveal All", bundle: .module), systemImage: "eye.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("sca.bulk.revealAll")
@@ -1293,7 +1294,7 @@ public struct MediaGalleryView: View {
             VStack {
                 HStack {
                     Spacer()
-                    Button("Done") { onDismiss() }
+                    Button(String(localized: "Done", bundle: .module)) { onDismiss() }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("sca.bulk.done")
                 }
@@ -1373,7 +1374,7 @@ public struct MediaGalleryView: View {
                 Button {
                     overlay.revealKey(key)
                 } label: {
-                    Text("Show Anyway")
+                    Text("Show Anyway", bundle: .module)
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -1391,7 +1392,7 @@ public struct MediaGalleryView: View {
                         if verified { overlay.revealAllAction() }
                     }
                 } label: {
-                    Text(isRequestingSlideshowVerification ? "…" : "Verify Age")
+                    Text(isRequestingSlideshowVerification ? "…" : "Verify Age", bundle: .module)
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -1438,45 +1439,45 @@ public struct MediaGalleryView: View {
                     .foregroundStyle(.primary)
             }
             .contextMenu {
-                Text("Slideshow Duration")
+                Text("Slideshow Duration", bundle: .module)
                 Divider()
-                Button("3 seconds") {
+                Button(String(localized: "3 seconds", bundle: .module)) {
                     customSlideshowDuration = 3.0
                     if !isSlideshowPlaying {
                         startSlideshow()
                     }
                 }
-                Button("5 seconds") {
+                Button(String(localized: "5 seconds", bundle: .module)) {
                     customSlideshowDuration = 5.0
                     if !isSlideshowPlaying {
                         startSlideshow()
                     }
                 }
-                Button("7 seconds") {
+                Button(String(localized: "7 seconds", bundle: .module)) {
                     customSlideshowDuration = 7.0
                     if !isSlideshowPlaying {
                         startSlideshow()
                     }
                 }
-                Button("10 seconds") {
+                Button(String(localized: "10 seconds", bundle: .module)) {
                     customSlideshowDuration = 10.0
                     if !isSlideshowPlaying {
                         startSlideshow()
                     }
                 }
-                Button("20 seconds") {
+                Button(String(localized: "20 seconds", bundle: .module)) {
                     customSlideshowDuration = 20.0
                     if !isSlideshowPlaying {
                         startSlideshow()
                     }
                 }
-                Button("30 seconds") {
+                Button(String(localized: "30 seconds", bundle: .module)) {
                     customSlideshowDuration = 30.0
                     if !isSlideshowPlaying {
                         startSlideshow()
                     }
                 }
-                Button("1 minute") {
+                Button(String(localized: "1 minute", bundle: .module)) {
                     customSlideshowDuration = 60.0
                     if !isSlideshowPlaying {
                         startSlideshow()
@@ -1484,7 +1485,7 @@ public struct MediaGalleryView: View {
                 }
                 if customSlideshowDuration != nil {
                     Divider()
-                    Button("Reset to Default") { customSlideshowDuration = nil }
+                    Button(String(localized: "Reset to Default", bundle: .module)) { customSlideshowDuration = nil }
                 }
             }
 

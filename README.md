@@ -150,6 +150,10 @@ A complete, shared sensitive-content guard so every app embedding MediaStream bl
 - **Full-screen cover with interactive chrome**: `sensitiveSurfaceBlock(..., topInteractivePassthrough:)` paints full-bleed under the nav bar and input field while leaving the top navigation buttons tappable, so the user can navigate away themselves.
 - **Host integration**: conform your existing guard to `SensitiveContentPolicy` (age status, `canReveal`, `canRequestVerificationFromShield`, `verdict(forKey:dataProvider:)`, `revealAll()`, `requestAdultVerification()`, `anySensitive(in:)`). Private/excluded media is never analyzed.
 
+### 🌍 Localization (v2.14.0)
+
+All built-in UI ships in English plus Simplified Chinese, Japanese, German, French, Spanish, Korean, Brazilian Portuguese and Italian, from the package's own `Localizable.xcstrings` (resolved via `Bundle.module`, so host apps don't need to carry MediaStream's strings). Text your app passes in — captions, `SensitiveBlockCopy` overrides, custom actions — is yours to localize.
+
 ## 📦 Installation
 
 ### Swift Package Manager

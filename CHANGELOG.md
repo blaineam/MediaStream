@@ -2,6 +2,23 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.0] - 2026-10-04
+
+### Added (localization — the gallery speaks the user's language)
+
+- **MediaStream is now localized** in English plus the Big 8: Simplified Chinese, Japanese, German, French, Spanish, Korean, Brazilian Portuguese and Italian. Until now the package had no string tables at all, so its SwiftUI literals were looked up in the *host app's* catalog — and since hosts never carry MediaStream's strings, every MediaStream surface (slideshow duration menu, projection picker, sensitive-content shields and age-verification prompts, Clear Download confirmations, grid multi-select, "No Media", load errors) stayed English for everyone, e.g. an Italian Enter Space user.
+- `Package.swift` declares `defaultLocalization: "en"` and ships `Sources/MediaStream/Resources/Localizable.xcstrings` (68 keys; `%lld / %lld`, `2D` and `…` are marked do-not-translate). Every user-facing string now resolves from `Bundle.module`: `Text("…", bundle: .module)` for SwiftUI text, `String(localized: "…", bundle: .module)` for button/label/alert/navigation titles, accessibility labels, loop-mode labels and error descriptions.
+- Count-driven text uses plural variations (`%lld Selected`, `This will remove %lld cached files (%@ MB)`).
+- `MediaFilter.localizedName` (new, public) is what the filter chips display; `rawValue` stays the stable English identifier.
+
+### Changed (source-compatible)
+
+- `SensitiveBlockCopy.init` parameters are now `String?` defaulting to `nil`, which resolves to MediaStream's localized default copy. Callers passing their own strings (Ari) compile and behave unchanged; `SensitiveBlockCopy.generic` is now localized.
+
+### Tests
+
+- `LocalizationTests`: every Big 8 language ships a compiled table, Italian strings and plurals resolve from the package bundle, block-copy defaults/overrides, and filter names.
+
 ## [2.13.0] - 2026-07-18
 
 ### Fixed (a toggled-on caption vanished with the auto-hiding controls)

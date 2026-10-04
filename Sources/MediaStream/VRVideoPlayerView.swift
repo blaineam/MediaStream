@@ -393,7 +393,7 @@ public struct VRVideoPlayerView: View {
                 }
 
             VStack(spacing: 2) {
-                Text("Projection")
+                Text("Projection", bundle: .module)
                     .font(.headline)
                     .foregroundColor(.white)
                     .padding(.bottom, 8)

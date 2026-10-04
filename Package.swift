@@ -5,6 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "MediaStream",
+    defaultLocalization: "en",
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
@@ -25,7 +26,12 @@ let package = Package(
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "MediaStream",
-            dependencies: []
+            dependencies: [],
+            resources: [
+                // UI strings in the Big 8 (zh-Hans, ja, de, fr, es, ko, pt-BR, it).
+                // Every user-facing string resolves from `Bundle.module`.
+                .process("Resources/Localizable.xcstrings")
+            ]
         ),
         .testTarget(
             name: "MediaStreamTests",

@@ -1671,7 +1671,7 @@ struct ZoomableMediaView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 40))
                 .foregroundColor(.secondary)
-            Text("Couldn't load this item")
+            Text("Couldn't load this item", bundle: .module)
                 .font(.callout)
                 .foregroundColor(.secondary)
             #if !os(tvOS)
@@ -1679,7 +1679,7 @@ struct ZoomableMediaView: View {
                 loadAttempts = 0
                 Task { await loadMedia() }
             } label: {
-                Text("Try Again")
+                Text("Try Again", bundle: .module)
                     .font(.callout.weight(.medium))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
