@@ -2,6 +2,13 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.1] - 2026-10-04
+
+### Fixed (CI only — no behavior change)
+
+- SwiftLint `line_length`: wrapped the two localized ternaries in `MediaDownloadButton` (and the grid's navigation title).
+- `LocalizationTests` now skip the per-language table checks when the SwiftPM command-line toolchain ships the String Catalog uncompiled (Swift 6.1 `swift test` on CI); the Xcode test job, which compiles the catalog the way host apps do, still runs them.
+
 ## [2.14.0] - 2026-10-04
 
 ### Added (localization — the gallery speaks the user's language)

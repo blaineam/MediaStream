@@ -15,6 +15,14 @@ final class LocalizationTests: XCTestCase {
     private let bigEight = ["zh-Hans", "ja", "de", "fr", "es", "ko", "pt-BR", "it"]
 
     private func bundle(for language: String) throws -> Bundle {
+        // Xcode compiles the String Catalog into <lang>.lproj tables (that's how
+        // host apps consume the package). Some SwiftPM command-line toolchains
+        // (e.g. Swift 6.1 `swift test` on CI) copy the .xcstrings uncompiled, so
+        // there are no per-language tables to inspect — skip rather than fail.
+        if Bundle.module.path(forResource: language, ofType: "lproj") == nil,
+           Bundle.module.path(forResource: "Localizable", ofType: "xcstrings") != nil {
+            throw XCTSkip("String Catalog not compiled by this toolchain (SwiftPM CLI); covered by the Xcode test job")
+        }
         let path = try XCTUnwrap(Bundle.module.path(forResource: language, ofType: "lproj"),
                                  "\(language).lproj missing from the MediaStream bundle")
         return try XCTUnwrap(Bundle(path: path))

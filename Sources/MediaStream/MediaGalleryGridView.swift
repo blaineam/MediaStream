@@ -500,7 +500,9 @@ public struct MediaGalleryGridView: View {
             }
         }
         #if os(iOS)
-        .navigationTitle(isMultiSelectMode ? String(localized: "\(selectedItems.count) Selected", bundle: .module) : String(localized: "Media Gallery", bundle: .module))
+        .navigationTitle(isMultiSelectMode
+            ? String(localized: "\(selectedItems.count) Selected", bundle: .module)
+            : String(localized: "Media Gallery", bundle: .module))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {

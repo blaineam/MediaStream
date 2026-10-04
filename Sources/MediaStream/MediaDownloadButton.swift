@@ -103,11 +103,18 @@ public struct MediaDownloadButton: View {
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
         .confirmationDialog(
-            mediaItems.count == 1 ? String(localized: "Clear Downloaded File", bundle: .module) : String(localized: "Clear Downloaded Media", bundle: .module),
+            mediaItems.count == 1
+                ? String(localized: "Clear Downloaded File", bundle: .module)
+                : String(localized: "Clear Downloaded Media", bundle: .module),
             isPresented: $showClearConfirmation,
             titleVisibility: .visible
         ) {
-            Button(mediaItems.count == 1 ? String(localized: "Clear Download", bundle: .module) : String(localized: "Clear All Downloads", bundle: .module), role: .destructive) {
+            Button(
+                mediaItems.count == 1
+                    ? String(localized: "Clear Download", bundle: .module)
+                    : String(localized: "Clear All Downloads", bundle: .module),
+                role: .destructive
+            ) {
                 downloadManager.clearDownloads(for: mediaItems)
             }
             Button(String(localized: "Cancel", bundle: .module), role: .cancel) {}
