@@ -577,8 +577,8 @@ public struct MediaGalleryView: View {
                     .simultaneousGesture(
                         // Navigation gesture - horizontal swipes when not zoomed
                         // Disabled for VR items so drag controls the VR camera instead
-                        DragGesture(minimumDistance: Self.swipeMinimumDistance)
-                            .onChanged { _ in
+                        DragGesture(minimumDistance: Self.swipeMinimumDistance, coordinateSpace: .global)
+                            .onChanged { value in
                                 // Sample the controls flag DURING the drag, not
                                 // just at its end.
                                 //
@@ -595,6 +595,14 @@ public struct MediaGalleryView: View {
                                 // during the drag cannot lose the race, because
                                 // the flag is unambiguously true then.
                                 if MediaControlsInteractionState.shared.isInteracting {
+                                    dragTouchedControls = true
+                                }
+                                // Independent of the flag: a drag that began on
+                                // the playback bar is a scrub even if the Slider
+                                // never reported editing (iOS 26+ timing).
+                                if currentItem?.type == .video || currentItem?.type == .audio,
+                                   MediaControlsInteractionState.shared
+                                    .isInsideControls(value.startLocation) {
                                     dragTouchedControls = true
                                 }
                             }

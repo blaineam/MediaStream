@@ -2,6 +2,12 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.14.2] - 2026-10-21
+
+### Fixed
+
+- **Scrubbing a video no longer pages to the next/previous item** (Enter Space, Ari). The earlier latch relied on the scrub Slider's `onEditingChanged` firing before the gallery's navigation drag crossed its threshold; when it did not, a scrub still paged. Playback control bars now register their on-screen frame (`ControlRegionModifier`, applied via `blockParentGestures()` on every platform), and the navigation drag ignores any drag that *began* inside a control bar of a video/audio item — independent of Slider callback timing.
+
 ## [2.14.1] - 2026-10-04
 
 ### Fixed (CI only — no behavior change)

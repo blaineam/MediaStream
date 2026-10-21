@@ -1223,6 +1223,19 @@ struct NavigationSuppressionTests {
         ) == false)
     }
 
+    @Test("A drag starting inside a registered control bar is a control drag")
+    @MainActor
+    func controlRegionHitTest() {
+        let state = MediaControlsInteractionState.shared
+        let id = UUID()
+        state.setControlRegion(id, frame: CGRect(x: 20, y: 700, width: 350, height: 60))
+        defer { state.setControlRegion(id, frame: nil) }
+        #expect(state.isInsideControls(CGPoint(x: 100, y: 730)))
+        #expect(!state.isInsideControls(CGPoint(x: 100, y: 300)))
+        state.setControlRegion(id, frame: nil)
+        #expect(!state.isInsideControls(CGPoint(x: 100, y: 730)))
+    }
+
     @Test("An ordinary swipe on the media still pages")
     func plainSwipeNavigates() {
         #expect(MediaGalleryView.shouldNavigate(

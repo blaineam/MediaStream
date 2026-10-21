@@ -50,6 +50,50 @@ public class MediaControlsInteractionState: ObservableObject {
         guard isInteracting else { return }
         isInteracting = false
     }
+
+    /// Screen-space (global) frames of on-screen playback control bars, keyed
+    /// by the reporting view. Not `@Published`: it changes with layout and
+    /// nothing renders from it.
+    ///
+    /// This is the second line of defence for "scrubbing pages the gallery".
+    /// The `isInteracting` flag depends on the Slider's `onEditingChanged`
+    /// timing relative to the gallery's navigation drag; a drag that BEGAN
+    /// inside a control bar is a control gesture no matter how that race
+    /// resolves, so the gallery also asks whether the drag started here.
+    @MainActor
+    private(set) var controlRegions: [UUID: CGRect] = [:]
+
+    @MainActor
+    func setControlRegion(_ id: UUID, frame: CGRect?) {
+        controlRegions[id] = frame
+    }
+
+    /// Whether a global-space point lies inside any registered control bar.
+    @MainActor
+    func isInsideControls(_ point: CGPoint) -> Bool {
+        controlRegions.values.contains { $0.contains(point) }
+    }
+}
+
+/// Reports the modified view's global frame to `MediaControlsInteractionState`
+/// so a drag that starts on the control bar never pages the gallery.
+struct ControlRegionModifier: ViewModifier {
+    @State private var regionID = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onChange(of: proxy.frame(in: .global), initial: true) { _, frame in
+                            MediaControlsInteractionState.shared.setControlRegion(regionID, frame: frame)
+                        }
+                }
+            )
+            .onDisappear {
+                MediaControlsInteractionState.shared.setControlRegion(regionID, frame: nil)
+            }
+    }
 }
 
 // MARK: - Gesture Blocking Helper
@@ -60,6 +104,7 @@ struct GestureBlockingModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(GestureBlocker())
+            .modifier(ControlRegionModifier())
     }
 }
 
@@ -146,7 +191,7 @@ extension View {
 #else
 extension View {
     func blockParentGestures() -> some View {
-        self
+        modifier(ControlRegionModifier())
     }
 }
 #endif
