@@ -568,200 +568,188 @@ public struct MediaGalleryView: View {
         return controlsRowBottomPadding + approxControlsRowHeight + captionGapAboveControls
     }
 
+    /// The slide stack: the current item plus its neighbours, with their
+    /// swipe gesture. Split out of `body` — see `observingGalleryState`.
+    private var slideLayer: some View {
+        // Only render current and adjacent items to save memory
+        // For 600+ items, rendering all would cause OOM
+        ZStack {
+            ForEach(visibleIndices, id: \.self) { index in
+                let item = mediaItems[index]
+                ZoomableMediaView(
+                    mediaItem: item,
+                    onZoomChanged: { zoomed in
+                        handleZoomChanged(zoomed)
+                    },
+                    isSlideshowPlaying: isSlideshowPlaying,
+                    autoPlayVideoOnOpen: configuration.autoPlayVideoOnOpen,
+                    showControls: showControls,
+                    isCurrentSlide: safeIndex == index,
+                    videoLoopCount: safeIndex == index ? videoLoopCount : 0,
+                    onVideoComplete: {
+                        handleVideoComplete()
+                    },
+                    onManualPlayTriggered: {
+                        // Start slideshow when user manually plays media
+                        if !isSlideshowPlaying {
+                            startSlideshow()
+                        }
+                    },
+                    vrProjectionOverride: vrProjectionOverrides[index],
+                    onVRProjectionChange: { newProjection in
+                        vrProjectionOverrides[index] = newProjection
+                        configuration.onVRProjectionChange?(mediaItems[index], newProjection)
+                    },
+                    onVRTapToggleControls: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showControls.toggle()
+                        }
+                        if showControls {
+                            scheduleHideControls()
+                        } else {
+                            cancelHideControls()
+                        }
+                    },
+                    onNextItem: { nextItem(); resetControlsTimer() },
+                    onPreviousItem: { previousItem(); resetControlsTimer() },
+                    onVRDurationKnown: { dur in
+                        guard !autoLoopApplied, dur > 0, dur < 120 else { return }
+                        autoLoopApplied = true
+                        if loopMode != .one {
+                            loopMode = .one
+                            syncLoopModeToService()
+                        }
+                    }
+                )
+                // OVERLAY-not-baked (slideshow): the full-screen viewer shows
+                // the REAL image and lays a blur OVERLAY on top while shielded;
+                // a verified adult's reveal removes it instantly (the observed
+                // controller publishes). Mirrors the grid cell.
+                .modifier(SlideshowSensitiveOverlay(
+                    overlay: configuration.sensitiveOverlay,
+                    key: (item as? SensitiveOverlayItem)?.sensitiveOverlayKey
+                ))
+                .opacity(safeIndex == index ? 1 : 0)
+                .zIndex(safeIndex == index ? 1 : 0)
+                .allowsHitTesting(safeIndex == index)
+                #if !os(tvOS)
+                .simultaneousGesture(
+                    // Navigation gesture - horizontal swipes when not zoomed
+                    // Disabled for VR items so drag controls the VR camera instead
+                    DragGesture(minimumDistance: Self.swipeMinimumDistance, coordinateSpace: .global)
+                        .onChanged { value in
+                            // Sample the controls flag DURING the drag, not
+                            // just at its end.
+                            //
+                            // Scrubbing is a horizontal drag, so it also
+                            // feeds this simultaneous navigation gesture. The
+                            // flag is reliably true while a scrub is in
+                            // flight — but the Slider clears it from
+                            // onEditingChanged(false) on touch-up, the same
+                            // instant onEnded fires here, with no ordering
+                            // guarantee between the two. Whenever the slider
+                            // won that race, onEnded read `false` and a scrub
+                            // paged the gallery: the reported "scrubbing a
+                            // little jumps to the next video". Latching
+                            // during the drag cannot lose the race, because
+                            // the flag is unambiguously true then.
+                            if MediaControlsInteractionState.shared.isInteracting {
+                                dragTouchedControls = true
+                            }
+                            // Independent of the flag: a drag that began on
+                            // the playback bar is a scrub even if the Slider
+                            // never reported editing (iOS 26+ timing).
+                            if currentItem?.type == .video || currentItem?.type == .audio,
+                               MediaControlsInteractionState.shared
+                                .isInsideControls(value.startLocation) {
+                                dragTouchedControls = true
+                            }
+                        }
+                        .onEnded { value in
+                            let touchedControls = dragTouchedControls
+                            dragTouchedControls = false
+                            guard Self.shouldNavigate(
+                                isZoomed: isZoomed,
+                                isVRSphere: isCurrentItemVRSphere,
+                                touchedControls: touchedControls,
+                                controlsInteracting:
+                                    MediaControlsInteractionState.shared.isInteracting
+                            ) else { return }
+                            guard let direction = Self.swipeDirection(for: value) else { return }
+                            if direction < 0 {
+                                nextItem()
+                            } else {
+                                previousItem()
+                            }
+                        }
+                )
+                #endif
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: currentIndex)
+        .transition(.opacity)
+        .ignoresSafeArea()
+    }
+
+    /// The state observers (index, item list, slideshow interval, playback
+    /// service, download state), applied to the slide stack.
+    ///
+    /// A generic function of its own, not modifiers chained inline in `body`:
+    /// `body` is already at the type checker's limit and tvOS's gives up
+    /// ("unable to type-check this expression in reasonable time" — hit by
+    /// MediaStream 2.15.0 on Enter Space's tvOS archive, and by the same chain
+    /// before it). A function body is checked on its own.
+    private func observingGalleryState<Content: View>(_ content: Content) -> some View {
+        content
+        .onChange(of: currentIndex) { _, newIndex in
+            handleIndexChanged(newIndex)
+        }
+        .onChange(of: mediaItems.count) { _, newCount in
+            handleItemListChanged(newCount: newCount)
+        }
+        .onChange(of: configuration.slideshowDuration) { _, _ in
+            // The host moved its own interval picker. Drop the in-gallery
+            // override so the host's new value actually takes effect —
+            // otherwise one use of the play-button context menu would
+            // shadow the host for the rest of the gallery's life. The menu
+            // keeps its intent: the override still wins until the host
+            // changes the value again.
+            guard customSlideshowDuration != nil else { return }
+            customSlideshowDuration = nil
+        }
+        .onChange(of: playbackService.currentIndex) { _, newServiceIndex in
+            // Sync local index when playback service changes (e.g., from lock screen controls)
+            guard playbackService.externalPlaybackMode else { return }
+            // Map the service index (within cached items) to the full media items index
+            let cachedItems = mediaItems.filter { item in
+                (item.type == .video || item.type == .audio) &&
+                MediaDownloadManager.shared.isCached(mediaItem: item)
+            }
+            guard newServiceIndex < cachedItems.count else { return }
+            let cachedItem = cachedItems[newServiceIndex]
+            if let fullIndex = mediaItems.firstIndex(where: { $0.id == cachedItem.id }), fullIndex != currentIndex {
+                currentIndex = fullIndex
+            }
+        }
+        .onChange(of: playbackService.duration) { _, newDuration in
+            guard !autoLoopApplied, newDuration > 0, newDuration < 120 else { return }
+            autoLoopApplied = true
+            if loopMode != .one {
+                loopMode = .one
+                syncLoopModeToService()
+            }
+        }
+        .onChange(of: downloadManager.downloadState) { _, newState in
+            holdControlsOpenWhileDownloading(newState)
+        }
+    }
+
     public var body: some View {
         ZStack {
             configuration.backgroundColor
                 .ignoresSafeArea()
 
-            // Only render current and adjacent items to save memory
-            // For 600+ items, rendering all would cause OOM
-            ZStack {
-                ForEach(visibleIndices, id: \.self) { index in
-                    let item = mediaItems[index]
-                    ZoomableMediaView(
-                        mediaItem: item,
-                        onZoomChanged: { zoomed in
-                            handleZoomChanged(zoomed)
-                        },
-                        isSlideshowPlaying: isSlideshowPlaying,
-                        autoPlayVideoOnOpen: configuration.autoPlayVideoOnOpen,
-                        showControls: showControls,
-                        isCurrentSlide: safeIndex == index,
-                        videoLoopCount: safeIndex == index ? videoLoopCount : 0,
-                        onVideoComplete: {
-                            handleVideoComplete()
-                        },
-                        onManualPlayTriggered: {
-                            // Start slideshow when user manually plays media
-                            if !isSlideshowPlaying {
-                                startSlideshow()
-                            }
-                        },
-                        vrProjectionOverride: vrProjectionOverrides[index],
-                        onVRProjectionChange: { newProjection in
-                            vrProjectionOverrides[index] = newProjection
-                            configuration.onVRProjectionChange?(mediaItems[index], newProjection)
-                        },
-                        onVRTapToggleControls: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showControls.toggle()
-                            }
-                            if showControls {
-                                scheduleHideControls()
-                            } else {
-                                cancelHideControls()
-                            }
-                        },
-                        onNextItem: { nextItem(); resetControlsTimer() },
-                        onPreviousItem: { previousItem(); resetControlsTimer() },
-                        onVRDurationKnown: { dur in
-                            guard !autoLoopApplied, dur > 0, dur < 120 else { return }
-                            autoLoopApplied = true
-                            if loopMode != .one {
-                                loopMode = .one
-                                syncLoopModeToService()
-                            }
-                        }
-                    )
-                    // OVERLAY-not-baked (slideshow): the full-screen viewer shows
-                    // the REAL image and lays a blur OVERLAY on top while shielded;
-                    // a verified adult's reveal removes it instantly (the observed
-                    // controller publishes). Mirrors the grid cell.
-                    .modifier(SlideshowSensitiveOverlay(
-                        overlay: configuration.sensitiveOverlay,
-                        key: (item as? SensitiveOverlayItem)?.sensitiveOverlayKey
-                    ))
-                    .opacity(safeIndex == index ? 1 : 0)
-                    .zIndex(safeIndex == index ? 1 : 0)
-                    .allowsHitTesting(safeIndex == index)
-                    #if !os(tvOS)
-                    .simultaneousGesture(
-                        // Navigation gesture - horizontal swipes when not zoomed
-                        // Disabled for VR items so drag controls the VR camera instead
-                        DragGesture(minimumDistance: Self.swipeMinimumDistance, coordinateSpace: .global)
-                            .onChanged { value in
-                                // Sample the controls flag DURING the drag, not
-                                // just at its end.
-                                //
-                                // Scrubbing is a horizontal drag, so it also
-                                // feeds this simultaneous navigation gesture. The
-                                // flag is reliably true while a scrub is in
-                                // flight — but the Slider clears it from
-                                // onEditingChanged(false) on touch-up, the same
-                                // instant onEnded fires here, with no ordering
-                                // guarantee between the two. Whenever the slider
-                                // won that race, onEnded read `false` and a scrub
-                                // paged the gallery: the reported "scrubbing a
-                                // little jumps to the next video". Latching
-                                // during the drag cannot lose the race, because
-                                // the flag is unambiguously true then.
-                                if MediaControlsInteractionState.shared.isInteracting {
-                                    dragTouchedControls = true
-                                }
-                                // Independent of the flag: a drag that began on
-                                // the playback bar is a scrub even if the Slider
-                                // never reported editing (iOS 26+ timing).
-                                if currentItem?.type == .video || currentItem?.type == .audio,
-                                   MediaControlsInteractionState.shared
-                                    .isInsideControls(value.startLocation) {
-                                    dragTouchedControls = true
-                                }
-                            }
-                            .onEnded { value in
-                                let touchedControls = dragTouchedControls
-                                dragTouchedControls = false
-                                guard Self.shouldNavigate(
-                                    isZoomed: isZoomed,
-                                    isVRSphere: isCurrentItemVRSphere,
-                                    touchedControls: touchedControls,
-                                    controlsInteracting:
-                                        MediaControlsInteractionState.shared.isInteracting
-                                ) else { return }
-                                guard let direction = Self.swipeDirection(for: value) else { return }
-                                if direction < 0 {
-                                    nextItem()
-                                } else {
-                                    previousItem()
-                                }
-                            }
-                    )
-                    #endif
-                }
-            }
-            .animation(.easeInOut(duration: 0.3), value: currentIndex)
-            .transition(.opacity)
-            .ignoresSafeArea()
-            .onChange(of: currentIndex) { _, newIndex in
-                handleIndexChanged(newIndex)
-            }
-            .onChange(of: mediaItems.count) { _, newCount in
-                // The item list changed under the gallery. HOLD THE USER'S
-                // PLACE: find the slide they were on by identity and follow it
-                // to its new index, rather than keeping a positional index that
-                // an insert has already invalidated. Clamping (the old
-                // behaviour, now the fallback) is only right when the anchored
-                // item is gone, e.g. it was the one deleted.
-                let keys = mediaItems.map { Self.identityKey(for: $0) }
-                let resolved = Self.reanchorIndex(
-                    anchorKey: anchorKey,
-                    keys: keys,
-                    currentIndex: currentIndex
-                )
-                // A shuffled walk is a permutation of the OLD count, so it
-                // can't survive a resize: rebuild it around where the user is.
-                if isShuffled {
-                    shuffledIndices = Self.shuffledOrder(count: newCount, startingAt: resolved)
-                    shuffledPosition = 0
-                }
-                if resolved != currentIndex {
-                    currentIndex = resolved
-                } else {
-                    // Same index, but the item under it may have changed (the
-                    // anchor was deleted) — keep the anchor truthful.
-                    anchorKey = currentItem.map { Self.identityKey(for: $0) } ?? anchorKey
-                }
-            }
-            .onChange(of: configuration.slideshowDuration) { _, _ in
-                // The host moved its own interval picker. Drop the in-gallery
-                // override so the host's new value actually takes effect —
-                // otherwise one use of the play-button context menu would
-                // shadow the host for the rest of the gallery's life. The menu
-                // keeps its intent: the override still wins until the host
-                // changes the value again.
-                guard customSlideshowDuration != nil else { return }
-                customSlideshowDuration = nil
-            }
-            .onChange(of: playbackService.currentIndex) { _, newServiceIndex in
-                // Sync local index when playback service changes (e.g., from lock screen controls)
-                guard playbackService.externalPlaybackMode else { return }
-                // Map the service index (within cached items) to the full media items index
-                let cachedItems = mediaItems.filter { item in
-                    (item.type == .video || item.type == .audio) &&
-                    MediaDownloadManager.shared.isCached(mediaItem: item)
-                }
-                guard newServiceIndex < cachedItems.count else { return }
-                let cachedItem = cachedItems[newServiceIndex]
-                if let fullIndex = mediaItems.firstIndex(where: { $0.id == cachedItem.id }), fullIndex != currentIndex {
-                    currentIndex = fullIndex
-                }
-            }
-            .onChange(of: playbackService.duration) { _, newDuration in
-                guard !autoLoopApplied, newDuration > 0, newDuration < 120 else { return }
-                autoLoopApplied = true
-                if loopMode != .one {
-                    loopMode = .one
-                    syncLoopModeToService()
-                }
-            }
-            .onChange(of: downloadManager.downloadState) { _, newState in
-                // Hold the controls open for the duration of a download so the
-                // progress stays readable — but don't RAISE them: the download
-                // was started from the controls, and if the user has since
-                // dismissed them they asked for the content, not the chrome.
-                if case .downloading = newState, showControls {
-                    cancelHideControls()
-                }
-            }
+            observingGalleryState(slideLayer)
 
             // Empty state — nothing to render, just a way back out
             if mediaItems.isEmpty {
@@ -1013,22 +1001,22 @@ public struct MediaGalleryView: View {
                     .onChange(of: proxy.size) { _, newSize in containerSize = newSize }
             }
         )
+        #if os(tvOS)
+        // No touch surface on tvOS: a select press has no location, so there
+        // is no centre to test — it toggles as it always did.
+        .onTapGesture {
+            toggleControlsFromTap()
+        }
+        #else
         .onTapGesture(coordinateSpace: .local) { location in
             // A SINGLE TAP IN THE CENTRE is the one way to toggle the controls.
             // Taps nearer the edges are left alone: they're where a thumb lands
             // while holding the device, and putting the chrome back over the
             // picture is exactly what the user asked to stop happening.
-            guard configuration.showControls else { return }
             guard Self.isCenterTap(location, in: containerSize) else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                showControls.toggle()
-            }
-            if showControls {
-                scheduleHideControls()
-            } else {
-                cancelHideControls()
-            }
+            toggleControlsFromTap()
         }
+        #endif
         #if os(macOS)
         .onContinuousHover { phase in
             switch phase {
@@ -1788,6 +1776,66 @@ public struct MediaGalleryView: View {
                 // Now animate the transition after the pause
                 self.nextItemAfterVideoCompletion()
             }
+        }
+    }
+
+    /// Show or hide the controls in response to a tap the caller has already
+    /// decided counts (centre tap on touch platforms, any select on tvOS).
+    private func toggleControlsFromTap() {
+        guard configuration.showControls else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showControls.toggle()
+        }
+        if showControls {
+            scheduleHideControls()
+        } else {
+            cancelHideControls()
+        }
+    }
+
+    /// Hold the controls open for the duration of a download so the progress
+    /// stays readable — but don't RAISE them: the download was started from the
+    /// controls, and if the user has since dismissed them they asked for the
+    /// content, not the chrome.
+    ///
+    /// A method with nested conditions, not an inline `if case …, showControls`:
+    /// that combined pattern inside the body's modifier chain is what the tvOS
+    /// type checker gave up on ("unable to type-check this expression in
+    /// reasonable time", MediaStream 2.15.0).
+    private func holdControlsOpenWhileDownloading(_ state: DownloadState) {
+        guard showControls else { return }
+        if case .downloading = state {
+            cancelHideControls()
+        }
+    }
+
+    /// The item list changed under the gallery. HOLD THE USER'S PLACE: find the
+    /// slide they were on by identity and follow it to its new index, rather
+    /// than keeping a positional index that an insert has already invalidated.
+    /// Clamping (the old behaviour, now the fallback) is only right when the
+    /// anchored item is gone, e.g. it was the one deleted.
+    ///
+    /// A method, not an inline closure: the body's modifier chain is already at
+    /// the type checker's limit on tvOS, and this handler grew past it.
+    private func handleItemListChanged(newCount: Int) {
+        let keys = mediaItems.map { Self.identityKey(for: $0) }
+        let resolved = Self.reanchorIndex(
+            anchorKey: anchorKey,
+            keys: keys,
+            currentIndex: currentIndex
+        )
+        // A shuffled walk is a permutation of the OLD count, so it can't
+        // survive a resize: rebuild it around where the user is.
+        if isShuffled {
+            shuffledIndices = Self.shuffledOrder(count: newCount, startingAt: resolved)
+            shuffledPosition = 0
+        }
+        if resolved != currentIndex {
+            currentIndex = resolved
+        } else {
+            // Same index, but the item under it may have changed (the anchor
+            // was deleted) — keep the anchor truthful.
+            anchorKey = currentItem.map { Self.identityKey(for: $0) } ?? anchorKey
         }
     }
 

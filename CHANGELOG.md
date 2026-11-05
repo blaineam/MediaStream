@@ -2,6 +2,14 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.15.1] - 2026-11-05
+
+### Fixed (2.15.0 did not compile for tvOS)
+
+- **tvOS archives failed** — Enter Space's Xcode Cloud run for tvOS died with "the compiler is unable to type-check this expression in reasonable time" in `MediaGalleryView.body`. 2.15.0's changes pushed the body's modifier chain past the type checker's limit on that toolchain (the iOS/macOS builds were fine, which is why the package's own tests were green). The state observers (index, item list, slideshow interval, playback service, download state) now live in `observingGalleryState(_:)`, and the slide stack in `slideLayer`, so each is checked on its own; the item-list and download handlers are plain methods.
+- **`onTapGesture(coordinateSpace:)` does not exist on tvOS** — the type-check failure had hidden this second error. tvOS keeps its plain tap (a select press has no location, so there is no "centre" to test); touch platforms keep the centre-tap rule. The shared toggle is `toggleControlsFromTap()`.
+- No behaviour change on iOS, iPadOS or macOS. Verified by building the package for tvOS, iOS and macOS.
+
 ## [2.15.0] - 2026-11-05
 
 ### Fixed (the slideshow moved when its host's item list changed)
