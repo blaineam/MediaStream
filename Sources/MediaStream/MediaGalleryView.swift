@@ -197,6 +197,59 @@ public struct MediaGalleryView: View {
         return min(max(0, index), count - 1)
     }
 
+    // MARK: - Holding the user's place when the item list changes
+
+    /// A key that identifies an item ACROSS rebuilds of the host's array.
+    ///
+    /// `id` is not that key: hosts commonly rebuild their `[any MediaItem]`
+    /// from their own model (a new message arrives, a thumbnail is revealed)
+    /// and hand out freshly minted UUIDs for the very same files. `diskCacheKey`
+    /// is derived from the file itself, which is exactly the stability wanted
+    /// here; `id` is the fallback for items that opt out of caching.
+    static func identityKey(for item: any MediaItem) -> String {
+        item.diskCacheKey ?? item.id.uuidString
+    }
+
+    /// Where the user's slide now lives after the item list changed.
+    ///
+    /// The bug this fixes: a dataset that GAINS an item while the slideshow is
+    /// open (Ari generating the next picture into the conversation) moved the
+    /// viewer off the slide they were watching. Clamping — the old behaviour —
+    /// only ever helped a SHRINKING list; for an insert it keeps a positional
+    /// index that no longer points at the same picture.
+    ///
+    /// - Returns: the index of `anchorKey` in the new list when it survived,
+    ///   otherwise `currentIndex` clamped into range.
+    static func reanchorIndex(
+        anchorKey: String?,
+        keys: [String],
+        currentIndex: Int
+    ) -> Int {
+        if let anchorKey, let found = keys.firstIndex(of: anchorKey) {
+            return found
+        }
+        return clampedIndex(currentIndex, count: keys.count)
+    }
+
+    /// Fraction of the slide's width/height treated as "edge" rather than
+    /// centre, per side. 0.2 leaves the middle 60% × 60% as the centre.
+    static let centerTapInsetFraction: CGFloat = 0.2
+
+    /// Whether a tap at `location` counts as a CENTRE tap of a slide of `size`.
+    ///
+    /// The controls are reachable ONLY from the centre now, so that a tap aimed
+    /// at the edge of a picture — or a stray thumb while watching — can't put
+    /// the chrome back over content the user is enjoying. A zero/degenerate
+    /// size means layout hasn't reported yet: treat it as centre, so there is
+    /// never a state in which the controls cannot be summoned at all.
+    static func isCenterTap(_ location: CGPoint, in size: CGSize) -> Bool {
+        guard size.width > 0, size.height > 0 else { return true }
+        let insetX = size.width * centerTapInsetFraction
+        let insetY = size.height * centerTapInsetFraction
+        return location.x >= insetX && location.x <= size.width - insetX
+            && location.y >= insetY && location.y <= size.height - insetY
+    }
+
     // MARK: - Swipe Navigation Thresholds
 
     /// Finger travel before the navigation drag engages at all.
@@ -326,6 +379,14 @@ public struct MediaGalleryView: View {
     @State private var wasPlayingBeforeZoom = false
     @State private var slideshowTimer: Timer?
     @State private var showControls = true
+    /// Identity of the slide the user is actually looking at, so a host that
+    /// APPENDS to (or deletes from) `mediaItems` while the gallery is open
+    /// doesn't move them. See `identityKey(for:)` / `reanchorIndex(...)`.
+    @State private var anchorKey: String?
+    /// Size of the slide area, for the centre-tap test. Zero until the first
+    /// layout pass, which `isCenterTap` treats as "centre" so the controls are
+    /// never unreachable.
+    @State private var containerSize: CGSize = .zero
     @State private var shareItem: Any?
     @State private var showShareSheet = false
     @State private var showFlatProjectionPicker = false
@@ -634,11 +695,30 @@ public struct MediaGalleryView: View {
                 handleIndexChanged(newIndex)
             }
             .onChange(of: mediaItems.count) { _, newCount in
-                // The caller can shrink the array (item deleted) while @State
-                // still holds an index past the new end — re-clamp it.
-                let clamped = Self.clampedIndex(currentIndex, count: newCount)
-                if clamped != currentIndex {
-                    currentIndex = clamped
+                // The item list changed under the gallery. HOLD THE USER'S
+                // PLACE: find the slide they were on by identity and follow it
+                // to its new index, rather than keeping a positional index that
+                // an insert has already invalidated. Clamping (the old
+                // behaviour, now the fallback) is only right when the anchored
+                // item is gone, e.g. it was the one deleted.
+                let keys = mediaItems.map { Self.identityKey(for: $0) }
+                let resolved = Self.reanchorIndex(
+                    anchorKey: anchorKey,
+                    keys: keys,
+                    currentIndex: currentIndex
+                )
+                // A shuffled walk is a permutation of the OLD count, so it
+                // can't survive a resize: rebuild it around where the user is.
+                if isShuffled {
+                    shuffledIndices = Self.shuffledOrder(count: newCount, startingAt: resolved)
+                    shuffledPosition = 0
+                }
+                if resolved != currentIndex {
+                    currentIndex = resolved
+                } else {
+                    // Same index, but the item under it may have changed (the
+                    // anchor was deleted) — keep the anchor truthful.
+                    anchorKey = currentItem.map { Self.identityKey(for: $0) } ?? anchorKey
                 }
             }
             .onChange(of: configuration.slideshowDuration) { _, _ in
@@ -674,13 +754,11 @@ public struct MediaGalleryView: View {
                 }
             }
             .onChange(of: downloadManager.downloadState) { _, newState in
-                // Show controls when download starts so user can see progress
-                if case .downloading = newState {
-                    if !showControls {
-                        withAnimation(.easeIn(duration: 0.2)) {
-                            showControls = true
-                        }
-                    }
+                // Hold the controls open for the duration of a download so the
+                // progress stays readable — but don't RAISE them: the download
+                // was started from the controls, and if the user has since
+                // dismissed them they asked for the content, not the chrome.
+                if case .downloading = newState, showControls {
                     cancelHideControls()
                 }
             }
@@ -927,17 +1005,28 @@ public struct MediaGalleryView: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            // Only toggle controls if configuration allows it
-            if configuration.showControls {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showControls.toggle()
-                }
-                if showControls {
-                    scheduleHideControls()
-                } else {
-                    cancelHideControls()
-                }
+        .background(
+            // Slide size for the centre-tap test.
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { containerSize = proxy.size }
+                    .onChange(of: proxy.size) { _, newSize in containerSize = newSize }
+            }
+        )
+        .onTapGesture(coordinateSpace: .local) { location in
+            // A SINGLE TAP IN THE CENTRE is the one way to toggle the controls.
+            // Taps nearer the edges are left alone: they're where a thumb lands
+            // while holding the device, and putting the chrome back over the
+            // picture is exactly what the user asked to stop happening.
+            guard configuration.showControls else { return }
+            guard Self.isCenterTap(location, in: containerSize) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showControls.toggle()
+            }
+            if showControls {
+                scheduleHideControls()
+            } else {
+                cancelHideControls()
             }
         }
         #if os(macOS)
@@ -989,6 +1078,11 @@ public struct MediaGalleryView: View {
         )
         #endif
         .onAppear {
+            // Anchor on the opening slide, so the very first insert into the
+            // host's list already holds the user's place.
+            if anchorKey == nil {
+                anchorKey = currentItem.map { Self.identityKey(for: $0) }
+            }
             checkAndHandleVideo()
             loadCaption()
             scheduleHideControls()
@@ -1716,9 +1810,16 @@ public struct MediaGalleryView: View {
         // caused it. The four ad-hoc calls are gone; they all assign
         // `currentIndex`, so they still notify — through here.
         onIndexChange?(newIndex)
+        // Follow the new slide, so a later insert/delete re-anchors on THIS one.
+        anchorKey = currentItem.map { Self.identityKey(for: $0) } ?? anchorKey
         checkAndHandleVideo()
         loadCaption()
-        resetControlsTimer()
+        // Re-arm the idle timer, but DO NOT bring the controls back: the user
+        // dismissed them to watch the content, and a slide change is not their
+        // interaction. (This was `resetControlsTimer()`, which re-showed the
+        // chrome on every advance — so dismissing it right before the next
+        // slide looked like it had ignored the tap.)
+        noteControlsActivity()
 
         // Sync current index to the playback service (for background controls)
         if playbackService.externalPlaybackMode, mediaItems.indices.contains(newIndex) {
@@ -2177,11 +2278,16 @@ public struct MediaGalleryView: View {
         }
     }
 
+    /// How long the controls stay up with no interaction before they hide
+    /// themselves. The content is the point of the slideshow, so this is short
+    /// enough to get out of the way on its own.
+    static let controlsIdleTimeout: TimeInterval = 10.0
+
     private func scheduleHideControls() {
         cancelHideControls()
         // Don't start auto-dismiss timer while projection picker is open
         guard !showFlatProjectionPicker else { return }
-        hideControlsTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { _ in
+        hideControlsTimer = Timer.scheduledTimer(withTimeInterval: Self.controlsIdleTimeout, repeats: false) { _ in
             Task { @MainActor [self] in
                 // Don't hide controls while downloading or while projection picker is open
                 if case .downloading = MediaDownloadManager.shared.downloadState {
@@ -2200,12 +2306,22 @@ public struct MediaGalleryView: View {
         hideControlsTimer = nil
     }
 
+    /// Summon the controls (keyboard navigation, pointer movement on macOS) and
+    /// start their idle countdown.
     private func resetControlsTimer() {
         if !showControls {
             withAnimation(.easeIn(duration: 0.2)) {
                 showControls = true
             }
         }
+        scheduleHideControls()
+    }
+
+    /// Something happened that should POSTPONE the auto-hide without ever
+    /// summoning the chrome: the slideshow advanced, a download started. If the
+    /// controls are already hidden they stay hidden.
+    private func noteControlsActivity() {
+        guard showControls else { return }
         scheduleHideControls()
     }
 

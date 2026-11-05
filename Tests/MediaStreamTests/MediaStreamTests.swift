@@ -766,6 +766,124 @@ struct IndexBoundsTests {
     }
 }
 
+// MARK: - Holding the user's place / controls behaviour
+
+/// The slideshow used to MOVE when its host's item list changed: Ari generating
+/// another picture into the open conversation appended an item, and the viewer
+/// jumped off the slide they were watching (to whatever index the rebuild
+/// handed back). Position is now followed by item identity.
+@Suite("Slide Anchoring Tests")
+struct SlideAnchoringTests {
+    @Test("An appended item leaves the user on the same slide")
+    func appendKeepsPosition() {
+        let keys = ["a", "b", "c"]
+        let grown = keys + ["d"]
+        // Watching "b" (index 1) — still index 1, and still "b".
+        #expect(MediaGalleryView.reanchorIndex(anchorKey: "b", keys: grown, currentIndex: 1) == 1)
+    }
+
+    @Test("An item inserted BEFORE the user's slide follows it to its new index")
+    func insertBeforeFollowsItem() {
+        // The case clamping could never handle: the picture the user is on is
+        // still there, just one place later.
+        let keys = ["new", "a", "b", "c"]
+        #expect(MediaGalleryView.reanchorIndex(anchorKey: "b", keys: keys, currentIndex: 2) == 2)
+        #expect(MediaGalleryView.reanchorIndex(anchorKey: "a", keys: keys, currentIndex: 0) == 1)
+    }
+
+    @Test("A deleted anchor falls back to clamping")
+    func deletedAnchorClamps() {
+        // "c" was the slide and it was deleted: stay in range at the end.
+        #expect(MediaGalleryView.reanchorIndex(anchorKey: "c", keys: ["a", "b"], currentIndex: 2) == 1)
+        // Nothing left at all.
+        #expect(MediaGalleryView.reanchorIndex(anchorKey: "c", keys: [], currentIndex: 2) == 0)
+        // No anchor yet (first update before any slide was recorded).
+        #expect(MediaGalleryView.reanchorIndex(anchorKey: nil, keys: ["a", "b"], currentIndex: 5) == 1)
+    }
+
+    @Test("Identity comes from diskCacheKey, which survives a host's rebuild")
+    func identityUsesDiskCacheKey() {
+        // Hosts rebuild their [any MediaItem] from their own model and mint new
+        // UUIDs for the same files, so `id` is not an identity across updates.
+        let first = ImageMediaItem(imageLoader: { nil }, cacheKey: "photo-7")
+        let rebuilt = ImageMediaItem(imageLoader: { nil }, cacheKey: "photo-7")
+        #expect(first.id != rebuilt.id)
+        #expect(MediaGalleryView.identityKey(for: first) == MediaGalleryView.identityKey(for: rebuilt))
+
+        // Without a cache key there is nothing stable but the id.
+        let uncached = ImageMediaItem { nil }
+        #expect(MediaGalleryView.identityKey(for: uncached) == uncached.id.uuidString)
+    }
+}
+
+/// The controls are for reaching the transport, not for sitting on the picture:
+/// a centre tap summons them and ten idle seconds puts them away. Nothing else
+/// — least of all the slideshow advancing — may raise them.
+@Suite("Controls Visibility Tests")
+struct ControlsVisibilityTests {
+    private static func galleryViewSource() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: root.appendingPathComponent("Sources/MediaStream/MediaGalleryView.swift"),
+            encoding: .utf8
+        )
+    }
+
+    @Test("Controls hide after ten idle seconds")
+    func idleTimeout() {
+        #expect(MediaGalleryView.controlsIdleTimeout == 10.0)
+    }
+
+    @Test("Only a tap near the middle of the slide toggles the controls")
+    func centerTapRegion() {
+        let size = CGSize(width: 1000, height: 500)
+        #expect(MediaGalleryView.isCenterTap(CGPoint(x: 500, y: 250), in: size))
+        #expect(MediaGalleryView.isCenterTap(CGPoint(x: 210, y: 110), in: size))
+        // Edges: a thumb on the bezel, the corner of a picture.
+        #expect(!MediaGalleryView.isCenterTap(CGPoint(x: 10, y: 250), in: size))
+        #expect(!MediaGalleryView.isCenterTap(CGPoint(x: 990, y: 250), in: size))
+        #expect(!MediaGalleryView.isCenterTap(CGPoint(x: 500, y: 8), in: size))
+        #expect(!MediaGalleryView.isCenterTap(CGPoint(x: 500, y: 495), in: size))
+    }
+
+    @Test("A slide with no measured size treats every tap as centre")
+    func unmeasuredSizeFailsOpen() {
+        // Layout hasn't reported yet — the controls must not be unreachable.
+        #expect(MediaGalleryView.isCenterTap(.zero, in: .zero))
+        #expect(MediaGalleryView.isCenterTap(CGPoint(x: 5, y: 5), in: CGSize(width: 0, height: 100)))
+    }
+
+    /// Structural, like the index-notification tests: the regression was a CALL
+    /// SITE (`resetControlsTimer()` inside `handleIndexChanged`) that re-showed
+    /// the chrome on every advance, so dismissing it just before the next slide
+    /// looked like the tap had been ignored. No value test can see that.
+    @Test("Advancing a slide re-arms the idle timer but never raises the controls")
+    func indexChangeDoesNotRevealControls() throws {
+        let source = try Self.galleryViewSource()
+        guard let start = source.range(of: "private func handleIndexChanged(") else {
+            Issue.record("handleIndexChanged not found — did it get renamed?")
+            return
+        }
+        let rest = source[start.upperBound...]
+        let whole = rest.range(of: "\n    private func").map { String(rest[..<$0.lowerBound]) }
+            ?? String(rest)
+        // Code only: the comment explaining the fix names the old call.
+        let body = whole
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        #expect(!body.contains("resetControlsTimer()"), """
+            handleIndexChanged must not call resetControlsTimer(), which SHOWS \
+            the controls. Use noteControlsActivity(), which only postpones the \
+            auto-hide when they are already visible.
+            """)
+        #expect(body.contains("noteControlsActivity()"))
+    }
+}
+
 // MARK: - ThumbnailCache Tests
 
 @Suite("ThumbnailCache Tests")

@@ -2,6 +2,21 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.15.0] - 2026-11-05
+
+### Fixed (the slideshow moved when its host's item list changed)
+
+- **A dataset that GAINS an item while the gallery is open no longer jumps the viewer off their slide.** The gallery tracked its position as a bare index and, on a count change, only *clamped* it — which helps a shrinking list and does nothing for an insert. A host that appends (Ari generating the next picture into the open conversation) left the user staring at a different picture, and a host that remounts the gallery on count change re-seeded the index from whatever it had persisted. Position is now followed by item IDENTITY: the current slide's `diskCacheKey` (falling back to `id`) is anchored, and when the list changes the gallery re-finds that item and moves to its new index, clamping only when the anchored item is really gone. New, testable: `MediaGalleryView.identityKey(for:)`, `reanchorIndex(anchorKey:keys:currentIndex:)`.
+  - `diskCacheKey` rather than `id` because hosts rebuild `[any MediaItem]` from their own model and mint fresh UUIDs for the very same files.
+  - A shuffled walk is a permutation of the old count, so a resize now rebuilds it around the slide the user is on instead of leaving stale indices in it.
+
+### Changed (the controls stay out of the way)
+
+- **Advancing a slide no longer brings the controls back.** `handleIndexChanged` called `resetControlsTimer()`, which SHOWS the chrome — so dismissing the controls just before the next slide looked like the tap had been ignored. Index changes now call the new `noteControlsActivity()`, which only postpones the auto-hide when the controls are already visible. A download starting does the same (it holds them open, no longer raises them).
+- **Only a single tap in the CENTRE of the slide toggles the controls** (`isCenterTap(_:in:)`, middle 60% × 60%). Taps nearer the edges — where a thumb rests while holding the device — are left alone. A slide whose size layout has not yet reported treats every tap as centre, so the controls can never become unreachable.
+- **Idle timeout is 10 seconds** (was 8), exposed as `MediaGalleryView.controlsIdleTimeout`.
+- Keyboard navigation and macOS pointer movement still summon the controls, as before: those are the user's own input, which is what the centre-tap rule is about.
+
 ## [2.14.2] - 2026-10-21
 
 ### Fixed
