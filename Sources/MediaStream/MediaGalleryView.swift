@@ -1365,6 +1365,16 @@ public struct MediaGalleryView: View {
                 if canReveal {
                     Button {
                         overlay.revealAllAction()
+                        // The transport is suppressed while the block is up (see
+                        // the `!shouldBulkBlock` gate on the controls overlay),
+                        // but its idle countdown keeps running behind the shield —
+                        // so a user who reads the warning for longer than
+                        // `controlsIdleTimeout` used to clear the block and land
+                        // on a slideshow with NO controls at all. Revealing is an
+                        // interaction with an on-screen control, so restart the
+                        // countdown and bring the chrome back, exactly as every
+                        // other control's action does.
+                        resetControlsTimer()
                     } label: {
                         Label(String(localized: "Reveal All", bundle: .module), systemImage: "eye.fill")
                     }
