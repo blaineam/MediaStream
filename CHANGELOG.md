@@ -2,6 +2,16 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.17.0] - 2026-11-09
+
+### Fixed (slow starts and stutter from cloud remotes)
+
+- **Video from a slow-to-answer server (a cloud remote behind rclone) started slowly and stuttered.** AVPlayer reads a file as many short-lived range requests: it takes a few megabytes, cancels once its buffer is full, and asks again from about the same place a moment later. The loader turned each into its own HTTP request, so a server that needs a second or more to answer every request (rclone serving pCloud: a folder listing, a download link, then the download) charged that wait at startup three times over, again on every re-request during playback, and on every seek. On a fast link the waits ate into the buffer until playback paused and resumed in bursts.
+- **New `RCReadAheadEngine` behind `RCStreamingResourceLoader`.** Per file it keeps a few windows of bytes, each fed by ONE long-lived open-ended upstream request. An AV request that falls inside a window (or just past its end) is answered from memory and then fed live from that connection, with no new request. A window keeps reading after AV cancels, up to a read-ahead that starts at 2 MB (a thumbnail costs little) and doubles as the window is consumed, to 48 MB. It reconnects once half of that is used, so the reconnect's wait hides behind what's buffered. The content-info probe no longer costs a request of its own.
+- Measured against a local server that waits before every response (90 s, 10 Mbps H.264): with a 3 s wait at 16 Mbps, start went from 10.6 s to 4.5 s, and from 16.6 s to 9.6 s for a file with its index at the end. With a 4 s wait at 40 Mbps and a 25 Mbps file, start went from 13.5 s to 5.3 s, and the one stall disappeared. Seeking inside the buffered range resumes in about 0.4 s instead of one full server wait.
+- Mirror failover (`RCStreamRouting`) is unchanged in behaviour and now applies per connection: a failed or stalled connection resumes from the same byte on the next copy, and every pending AV request completes from it.
+- `MEDIASTREAM_RC_DEBUG=1` logs every request, window and connection. `RCStreamPlaybackLab` (skipped unless `STREAMLAB_URL` is set) is the playback benchmark used for the numbers above.
+
 ## [2.16.0] - 2026-11-09
 
 ### Added (one stream, several copies: mid-play failover)

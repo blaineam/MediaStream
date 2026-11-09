@@ -7,12 +7,11 @@
 //
 //  The host app installs `candidates`: given the real `https://` loopback URL
 //  AVPlayer is asking for, return every equivalent URL in preference order
-//  (fastest reachable mirror first). `RCStreamingResourceLoader` then fetches
-//  each byte range from the first candidate and, when a fetch fails —
-//  transport error, stall past `failoverRequestTimeout`, or an HTTP error
-//  status — retries the REMAINING bytes of that same range on the next
-//  candidate. AVPlayer never sees the hiccup: the range simply completes
-//  from a different backend.
+//  (fastest reachable mirror first). `RCStreamingResourceLoader` then reads
+//  from the first candidate and, when that connection fails — transport
+//  error, stall past `failoverRequestTimeout`, or an HTTP error status —
+//  continues from the same byte on the next candidate. AVPlayer never sees
+//  the hiccup: its pending ranges simply complete from a different backend.
 //
 //  The candidates must be byte-identical copies. The host is responsible for
 //  only offering locations whose size matches.
