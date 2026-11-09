@@ -2,6 +2,12 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.17.1] - 2026-11-09
+
+### Fixed
+
+- **A cancelled connection counted as a failed mirror.** When a stream's session went away (or anything else cancelled a connection the read-ahead engine hadn't stopped itself), the cancellation was reported through `RCStreamRouting.reportFailure` and retried on the next copy. Only real failures are reported now, and an engine that has been shut down neither reports nor reconnects.
+
 ## [2.17.0] - 2026-11-09
 
 ### Fixed (slow starts and stutter from cloud remotes)

@@ -178,8 +178,11 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         session = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
     }
 
-    /// Ends the session (tests).
+    private var invalidated = false
+
+    /// Ends the session; nothing is reported or retried afterwards (tests).
     func invalidate() {
+        queue.sync { invalidated = true }
         session.invalidateAndCancel()
     }
 
@@ -386,6 +389,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     }
 
     private func startUpstream(_ window: Window) {
+        // A task on an invalidated session raises an exception.
+        guard !invalidated else { return }
         guard let url = window.currentURL else {
             fail(window, error: URLError(.badURL))
             return
@@ -458,7 +463,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     }
 
     private func handleData(_ task: URLSessionDataTask, data: Data) {
-        guard let window = taskWindows[task.taskIdentifier], window.task === task else { return }
+        guard !invalidated, let window = taskWindows[task.taskIdentifier], window.task === task else { return }
         window.buffer.append(data)
         window.taskReceivedBytes = true
         window.failuresWithoutProgress = 0
@@ -468,10 +473,15 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
 
     private func handleCompletion(_ task: URLSessionTask, error: Error?) {
         let id = task.taskIdentifier
-        if engineCancelled.remove(id) != nil { return }
+        if engineCancelled.remove(id) != nil || invalidated { return }
         guard let window = taskWindows.removeValue(forKey: id), window.task === task else { return }
         window.task = nil
 
+        // A cancellation the engine didn't ask for (the session going away)
+        // says nothing about the server. A rejected response is cancelled by
+        // the engine too, but is a real failure.
+        let cancelled = (error as? URLError)?.code == .cancelled
+        if cancelled && !window.taskRejected { return }
         let failed = window.taskRejected || error != nil
         guard failed else {
             // An open-ended range that completes normally reached the end.
