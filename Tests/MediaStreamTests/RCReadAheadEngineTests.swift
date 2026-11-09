@@ -24,8 +24,8 @@ private final class RangeStubProtocol: URLProtocol {
         lock.withLock { _requests.filter { $0.path == path }.map { ($0.host, $0.range) } }
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override static func canInit(with request: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         let host = request.url?.host ?? ""
