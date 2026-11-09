@@ -2,6 +2,17 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.19.0] - 2026-11-09
+
+### Added
+
+- **`RCStreamingResourceLoader.shared.stats(for:)`** returns an `RCStreamStats` for a stream made by `AVURLAsset.makeForRCStream` (pass the asset's URL): recent network throughput, connections fetching, measured time-to-first-byte, the copy (mirror) serving it, the file size and how far ahead of the player the engine has fetched. Hosts can show it as a "stream info" readout.
+
+### Changed
+
+- **More connections when the network is behind the video.** While a request is waiting on bytes not fetched yet, a window may run up to 8 fetches at once (4 otherwise). In the benchmark a 50 Mbps video over 12 Mbps-per-connection links with a 2 s wait now plays without a pause.
+- The loader's engine is created with the loader, not lazily, so `stats(for:)` can be read from the main thread safely.
+
 ## [2.18.0] - 2026-11-09
 
 ### Fixed (stutter when one connection is slower than the video)

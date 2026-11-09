@@ -217,6 +217,17 @@ final class RCReadAheadEngineTests: XCTestCase {
         XCTAssertGreaterThan(bounded.count, 1, "\(requests)")
     }
 
+    func testStatsDescribeTheStream() {
+        XCTAssertNil(engine.stats(for: url))
+        let sink = FakeSink(wantsContentInfo: true)
+        load(sink, lower: 0, upper: 99_999)
+        let stats = engine.stats(for: url)
+        XCTAssertEqual(stats?.contentLength, Int64(RangeStubProtocol.fileSize))
+        XCTAssertEqual(stats?.servingURL?.host, "lan")
+        XCTAssertGreaterThan(stats?.throughputBitsPerSecond ?? 0, 0)
+        XCTAssertNotNil(stats?.timeToFirstByte)
+    }
+
     func testRequestPastTheEndFinishesEmpty() {
         let info = FakeSink(wantsContentInfo: true)
         load(info, lower: 0, upper: 1)

@@ -43,6 +43,22 @@
 import Foundation
 
 /// One consumer of a byte range: an AV loading request in production.
+/// A snapshot of one stream's network side, for a diagnostics readout.
+public struct RCStreamStats: Sendable, Equatable {
+    /// Bytes arriving from the server over the last few seconds, in bits/s.
+    public var throughputBitsPerSecond: Double
+    /// Connections fetching right now.
+    public var activeConnections: Int
+    /// Measured wait from request to first byte (smoothed).
+    public var timeToFirstByte: TimeInterval?
+    /// The copy (mirror) the latest bytes came from.
+    public var servingURL: URL?
+    /// The file's size, once known.
+    public var contentLength: Int64?
+    /// Bytes fetched ahead of where the player last asked.
+    public var bufferedAheadBytes: Int64
+}
+
 protocol RCRangeSink: AnyObject {
     /// AV wants the content type and length filled before any data.
     var wantsContentInfo: Bool { get }
@@ -71,6 +87,9 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var idleStopAfter: TimeInterval = 15
         /// Chunks fetched at once per window.
         var parallelFetches = 4
+        /// While a request is waiting on bytes not yet fetched (the network
+        /// is behind the video), up to this many.
+        var maxParallelFetches = 8
         /// Chunk size bounds; between them a chunk is a quarter of the
         /// window's current read-ahead limit.
         var minChunk: Int64 = 1 << 20
@@ -102,6 +121,10 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var ttfb: TimeInterval?
         var windows: [Window] = []
         var lastActivity = Date()
+        /// (time, bytes) of recent arrivals, for the throughput readout.
+        var arrivals: [(Date, Int)] = []
+        /// The copy that delivered the latest bytes.
+        var servingURL: URL?
         init(url: URL, headers: [String: String]) {
             self.url = url
             self.headers = headers
@@ -241,6 +264,30 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     func invalidate() {
         queue.sync { invalidated = true }
         session.invalidateAndCancel()
+    }
+
+    // MARK: - Stats
+
+    private static let statsWindow: TimeInterval = 5
+
+    /// What the engine is doing for `url` right now, or nil if nothing.
+    func stats(for url: URL) -> RCStreamStats? {
+        queue.sync {
+            guard let resource = resources[url.absoluteString] else { return nil }
+            let now = Date()
+            let recent = resource.arrivals.filter { now.timeIntervalSince($0.0) <= Self.statsWindow }
+            let bytes = recent.reduce(0) { $0 + $1.1 }
+            let span = recent.first.map { max(1, now.timeIntervalSince($0.0)) } ?? Self.statsWindow
+            let active = resource.windows.reduce(0) { $0 + $1.fetches.filter { $0.task != nil }.count }
+            let ahead = resource.windows.map(\.ahead).max() ?? 0
+            return RCStreamStats(
+                throughputBitsPerSecond: Double(bytes) * 8 / span,
+                activeConnections: active,
+                timeToFirstByte: resource.ttfb,
+                servingURL: resource.servingURL,
+                contentLength: resource.contentLength,
+                bufferedAheadBytes: max(0, ahead))
+        }
     }
 
     // MARK: - Requests (on `queue`)
@@ -429,7 +476,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             cap(open, at: open.next)
         }
 
-        while window.fetches.filter({ $0.task != nil }).count < tuning.parallelFetches {
+        let slots = hungry ? tuning.maxParallelFetches : tuning.parallelFetches
+        while window.fetches.filter({ $0.task != nil }).count < slots {
             // Playback (someone waiting) gets big chunks straight away.
             let chunk = hungry ? tuning.maxChunk : chunkSize(window)
             if window.fetches.isEmpty {
@@ -610,6 +658,14 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         let window = fetch.window
         let room = fetch.stop - fetch.next
         fetch.pending.append(Int64(data.count) > room ? data.prefix(Int(max(0, room))) : data)
+        let resource = window.resource
+        let now = Date()
+        resource.arrivals.append((now, data.count))
+        if resource.arrivals.count > 64, let first = resource.arrivals.first,
+           now.timeIntervalSince(first.0) > Self.statsWindow {
+            resource.arrivals.removeAll { now.timeIntervalSince($0.0) > Self.statsWindow }
+        }
+        resource.servingURL = window.currentURL
         fetch.receivedBytes = true
         if fetch.firstByteAt == nil { fetch.firstByteAt = Date() } else { fetch.bytesSinceFirst += Int64(data.count) }
         if fetch.next >= fetch.stop { finishEarly(fetch) }

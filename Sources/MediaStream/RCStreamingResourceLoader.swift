@@ -40,7 +40,7 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
     public static let shared = RCStreamingResourceLoader()
 
     /// Serial queue handed to AVAssetResourceLoader. AV runs callbacks here.
-    public let queue = DispatchQueue(label: "com.mediastream.rcLoader", qos: .userInitiated)
+    public let queue: DispatchQueue
 
     /// Returns true if a URL is one we should intercept (self-signed loopback host).
     public static func shouldIntercept(url: URL) -> Bool {
@@ -64,8 +64,16 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
     }
 
     /// The byte pump: upstream connections, read-ahead and mirror failover.
-    /// Shares `queue` with AV's callbacks.
-    private lazy var engine = RCReadAheadEngine(queue: queue)
+    /// Shares `queue` with AV's callbacks. Created up front (not lazily):
+    /// `stats(for:)` reads it from the main thread.
+    private let engine: RCReadAheadEngine
+
+    override init() {
+        let queue = DispatchQueue(label: "com.mediastream.rcLoader", qos: .userInitiated)
+        self.queue = queue
+        self.engine = RCReadAheadEngine(queue: queue)
+        super.init()
+    }
 
     /// AV loading request as an engine sink. Only touched on `queue`, hence
     /// the unchecked Sendable.
@@ -104,6 +112,14 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
     }
 
     private var sinks: [ObjectIdentifier: LoadingSink] = [:]
+
+    /// The network side of a stream made by `AVURLAsset.makeForRCStream`
+    /// (pass the asset's URL), for a diagnostics readout. Nil when nothing is
+    /// being fetched for it.
+    public func stats(for assetURL: URL) -> RCStreamStats? {
+        let url = assetURL.scheme == RCStreamingScheme ? Self.realURL(for: assetURL) : assetURL
+        return url.flatMap { engine.stats(for: $0) }
+    }
 }
 
 extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
