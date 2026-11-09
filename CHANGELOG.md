@@ -2,6 +2,12 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.19.1] - 2026-11-09
+
+### Fixed
+
+- `RCStreamStats` has a public initializer, so hosts can build one in their tests.
+
 ## [2.19.0] - 2026-11-09
 
 ### Added

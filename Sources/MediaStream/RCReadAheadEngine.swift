@@ -57,6 +57,16 @@ public struct RCStreamStats: Sendable, Equatable {
     public var contentLength: Int64?
     /// Bytes fetched ahead of where the player last asked.
     public var bufferedAheadBytes: Int64
+
+    public init(throughputBitsPerSecond: Double, activeConnections: Int, timeToFirstByte: TimeInterval?,
+                servingURL: URL?, contentLength: Int64?, bufferedAheadBytes: Int64) {
+        self.throughputBitsPerSecond = throughputBitsPerSecond
+        self.activeConnections = activeConnections
+        self.timeToFirstByte = timeToFirstByte
+        self.servingURL = servingURL
+        self.contentLength = contentLength
+        self.bufferedAheadBytes = bufferedAheadBytes
+    }
 }
 
 protocol RCRangeSink: AnyObject {
