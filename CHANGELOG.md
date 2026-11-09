@@ -2,6 +2,18 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.16.0] - 2026-11-09
+
+### Added (one stream, several copies: mid-play failover)
+
+- **`RCStreamRouting`** — an optional host hook that maps one loopback stream URL to every equivalent copy ("mirror"), best first. `RCStreamingResourceLoader` fetches each byte range from the first candidate and, when it fails — a transport error, a stall longer than `failoverRequestTimeout` (15 s by default, only applied when there IS an alternative), or an HTTP error status — fetches the **remaining** bytes of that same range from the next candidate. AVPlayer keeps waiting on the same loading request and never sees the drop, so leaving a LAN mid-video carries on from a cloud copy. `reportFailure` / `reportSuccess` let the host demote a dead backend for every other request too.
+- **`RCStreamRouting.data(for:session:)`** — the same candidate walk for one-shot fetches (images, metadata prefixes): tries each copy in turn on transport errors and HTTP >= 400.
+- With no hook installed every URL has one candidate (itself) and behaviour is unchanged.
+
+### Fixed
+
+- **An HTTP error page could become the asset.** On a 4xx/5xx answer the loader still filled the content-information request from the error response (its `Content-Length` became the media length) and fed the error body to the decoder. Error statuses now fail the loading request (or fail over) instead.
+
 ## [2.15.1] - 2026-11-05
 
 ### Fixed (2.15.0 did not compile for tvOS)

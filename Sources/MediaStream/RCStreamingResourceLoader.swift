@@ -72,8 +72,43 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
         /// only fill content info on the first response we see.
         var contentInfoFilled = false
 
+        /// Equivalent locations for this resource (see `RCStreamRouting`),
+        /// in preference order, and which one the current task is using.
+        var candidates: [URL] = []
+        var candidateIndex = 0
+        /// The byte range AV asked for. `rangeUpper == nil` means "to end".
+        /// nil `rangeLower` means no Range header at all.
+        var rangeLower: Int64?
+        var rangeUpper: Int64?
+        /// Bytes already handed to AV for this request — a failover resumes
+        /// after them so nothing is delivered twice.
+        var bytesDelivered: Int64 = 0
+        /// Set when the current candidate answered with an HTTP error status:
+        /// its body must not be fed to AV, and completion fails over.
+        var rejectedResponse = false
+        /// Host-supplied headers, resolved once and reused on failover.
+        var headers: [String: String] = [:]
+        var startedAt = Date()
+
         init(loadingRequest: AVAssetResourceLoadingRequest) {
             self.loadingRequest = loadingRequest
+        }
+
+        var currentURL: URL? {
+            candidates.indices.contains(candidateIndex) ? candidates[candidateIndex] : nil
+        }
+
+        var hasFallback: Bool { candidateIndex + 1 < candidates.count }
+
+        /// Range header for the CURRENT attempt, accounting for bytes already
+        /// delivered by an earlier candidate.
+        var rangeHeader: String? {
+            guard let lower = rangeLower else { return nil }
+            let start = lower + bytesDelivered
+            if let upper = rangeUpper {
+                return "bytes=\(start)-\(upper)"
+            }
+            return "bytes=\(start)-"
         }
     }
 
@@ -153,6 +188,17 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
         let pending = pendingByTaskID[taskIdentifier]
         lock.unlock()
         guard let pending = pending else { return }
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            // An error page is not media. Never let its Content-Length become
+            // the asset's length or its body reach the decoder; completion
+            // fails over (or fails) instead.
+            pending.rejectedResponse = true
+            pending.task?.cancel()
+            return
+        }
+        if let url = pending.currentURL {
+            RCStreamRouting.reportSuccess?(url, Date().timeIntervalSince(pending.startedAt))
+        }
         if !pending.contentInfoFilled, let info = pending.loadingRequest.contentInformationRequest,
            let http = response as? HTTPURLResponse {
             info.contentType = http.value(forHTTPHeaderField: "Content-Type")
@@ -180,20 +226,48 @@ public final class RCStreamingResourceLoader: NSObject, @unchecked Sendable {
         lock.lock()
         let pending = pendingByTaskID[taskIdentifier]
         lock.unlock()
-        pending?.loadingRequest.dataRequest?.respond(with: data)
+        guard let pending, !pending.rejectedResponse else { return }
+        pending.bytesDelivered += Int64(data.count)
+        pending.loadingRequest.dataRequest?.respond(with: data)
     }
 
     fileprivate func handleCompletion(taskIdentifier: Int, error: Error?) {
         lock.lock()
         let pending = pendingByTaskID.removeValue(forKey: taskIdentifier)
-        if let pending = pending {
-            pendingByLoadingRequest.removeValue(forKey: ObjectIdentifier(pending.loadingRequest))
-        }
+        // Still registered under its loading request ⇒ AV hasn't cancelled it.
+        // A task WE cancelled for an HTTP error status still counts as failed.
+        let stillWanted = pending.map {
+            pendingByLoadingRequest[ObjectIdentifier($0.loadingRequest)] === $0
+        } ?? false
         lock.unlock()
         guard let pending = pending else { return }
-        if let error = error, (error as NSError).code != NSURLErrorCancelled {
+
+        let cancelled = (error as NSError?)?.code == NSURLErrorCancelled
+        let failed = pending.rejectedResponse || (error != nil && !cancelled)
+
+        if failed && stillWanted {
+            if let url = pending.currentURL { RCStreamRouting.reportFailure?(url) }
+            // Mid-stream failover: same loading request, remaining bytes, next
+            // mirror. AV keeps waiting on the request and never sees the drop.
+            if pending.hasFallback {
+                pending.candidateIndex += 1
+                pending.rejectedResponse = false
+                startTask(for: pending)
+                return
+            }
+        }
+
+        lock.lock()
+        pendingByLoadingRequest.removeValue(forKey: ObjectIdentifier(pending.loadingRequest))
+        lock.unlock()
+
+        if pending.rejectedResponse {
+            pending.loadingRequest.finishLoading(
+                with: NSError(domain: NSURLErrorDomain, code: NSURLErrorResourceUnavailable,
+                              userInfo: [NSLocalizedDescriptionKey: "The media server returned an error"]))
+        } else if let error = error, !cancelled {
             pending.loadingRequest.finishLoading(with: error)
-        } else {
+        } else if !cancelled || stillWanted {
             pending.loadingRequest.finishLoading()
         }
     }
@@ -216,34 +290,35 @@ extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
             return true
         }
 
-        // Build the Range header on the AV-owned queue while the request is
-        // still safe to inspect. AVPlayer issues many concurrent range
-        // requests for streaming; each one needs its `Range` to match the
-        // dataRequest exactly, with a left-open form for "to end of file"
-        // so the server can keep streaming without our needing to know
-        // total length.
-        var rangeHeader: String? = nil
+        // Capture the requested byte range on the AV-owned queue while the
+        // request is still safe to inspect. AVPlayer issues many concurrent
+        // range requests for streaming; each one needs its `Range` to match
+        // the dataRequest exactly, with a left-open form for "to end of file"
+        // so the server can keep streaming without our needing to know total
+        // length. Kept as numbers (not a header string) so a mid-range
+        // failover can resume after the bytes already delivered.
+        var rangeLower: Int64? = nil
+        var rangeUpper: Int64? = nil
         if let dataReq = loadingRequest.dataRequest {
             let lower = dataReq.requestedOffset
             if dataReq.requestsAllDataToEndOfResource {
-                rangeHeader = "bytes=\(lower)-"
-            } else {
-                let length = dataReq.requestedLength
-                if length > 0 {
-                    let upper = lower + Int64(length) - 1
-                    rangeHeader = "bytes=\(lower)-\(upper)"
-                } else if lower > 0 {
-                    rangeHeader = "bytes=\(lower)-"
-                }
+                rangeLower = lower
+            } else if dataReq.requestedLength > 0 {
+                rangeLower = lower
+                rangeUpper = lower + Int64(dataReq.requestedLength) - 1
+            } else if lower > 0 {
+                rangeLower = lower
             }
         } else if loadingRequest.contentInformationRequest != nil {
-            rangeHeader = "bytes=0-1"
+            rangeLower = 0
+            rangeUpper = 1
         }
 
         Task { [weak self] in
             await self?.kickOffFetch(loadingRequest: loadingRequest,
                                      httpsURL: httpsURL,
-                                     rangeHeader: rangeHeader)
+                                     rangeLower: rangeLower,
+                                     rangeUpper: rangeUpper)
         }
         return true
     }
@@ -260,25 +335,45 @@ extension RCStreamingResourceLoader: AVAssetResourceLoaderDelegate {
     /// would trap.
     private func kickOffFetch(loadingRequest: AVAssetResourceLoadingRequest,
                               httpsURL: URL,
-                              rangeHeader: String?) async {
-        var request = URLRequest(url: httpsURL)
+                              rangeLower: Int64?,
+                              rangeUpper: Int64?) async {
+        let pending = PendingRequest(loadingRequest: loadingRequest)
+        pending.candidates = RCStreamRouting.resolve(httpsURL)
+        pending.rangeLower = rangeLower
+        pending.rangeUpper = rangeUpper
+        // Headers are host-wide (Basic auth for the loopback listener), so
+        // the original URL's headers serve every candidate.
+        pending.headers = await MediaStreamConfiguration.headersAsync(for: httpsURL) ?? [:]
+        startTask(for: pending)
+    }
+
+    /// Start (or restart, on failover) the data task for `pending`'s current
+    /// candidate.
+    private func startTask(for pending: PendingRequest) {
+        guard let url = pending.currentURL else {
+            pending.loadingRequest.finishLoading(with: URLError(.badURL))
+            return
+        }
+        var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        if let rangeHeader = rangeHeader {
+        if pending.hasFallback {
+            request.timeoutInterval = RCStreamRouting.failoverRequestTimeout
+        }
+        if let rangeHeader = pending.rangeHeader {
             request.setValue(rangeHeader, forHTTPHeaderField: "Range")
         }
-        if let headers = await MediaStreamConfiguration.headersAsync(for: httpsURL) {
-            for (key, value) in headers {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
+        for (key, value) in pending.headers {
+            request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let pending = PendingRequest(loadingRequest: loadingRequest)
         let task = session.dataTask(with: request)
-        pending.task = task
+        pending.startedAt = Date()
 
         lock.lock()
+        if let old = pending.task { pendingByTaskID.removeValue(forKey: old.taskIdentifier) }
+        pending.task = task
         pendingByTaskID[task.taskIdentifier] = pending
-        pendingByLoadingRequest[ObjectIdentifier(loadingRequest)] = pending
+        pendingByLoadingRequest[ObjectIdentifier(pending.loadingRequest)] = pending
         lock.unlock()
 
         task.resume()
