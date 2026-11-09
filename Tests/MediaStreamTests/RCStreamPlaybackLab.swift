@@ -60,7 +60,11 @@ final class RCStreamPlaybackLab: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
             let playing = player.timeControlStatus == .playing
             if !playing { waiting += 0.1 }
-            if wasPlaying && !playing { transitions += 1 }
+            if wasPlaying && !playing {
+                transitions += 1
+                print(String(format: "STREAMLAB pause at %.1fs, buffered to %.1fs", player.currentTime().seconds,
+                             item.loadedTimeRanges.last.map { CMTimeRangeGetEnd($0.timeRangeValue).seconds } ?? 0))
+            }
             wasPlaying = playing
         }
         let position = player.currentTime().seconds

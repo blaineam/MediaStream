@@ -193,6 +193,30 @@ final class RCReadAheadEngineTests: XCTestCase {
                       "\(requests)")
     }
 
+    /// A whole-file read over a slow link is fetched as an open-ended head
+    /// plus bounded chunks in parallel, and arrives byte-for-byte in order.
+    func testParallelChunksReassembleInOrder() {
+        engine.invalidate()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeStubProtocol.self]
+        var tuning = RCReadAheadEngine.Tuning()
+        tuning.minChunk = 64 * 1024
+        tuning.maxChunk = 128 * 1024
+        tuning.minOpenEndedLead = 64 * 1024
+        tuning.maxOpenEndedLead = 64 * 1024
+        tuning.measureFor = 0.02
+        engine = RCReadAheadEngine(queue: queue, configuration: config, tuning: tuning)
+        RangeStubProtocol.reset(chunkDelay: 0.01)
+
+        let sink = FakeSink(wantsContentInfo: true)
+        load(sink, lower: 0, upper: nil)
+        XCTAssertNil(sink.error)
+        XCTAssertEqual(sink.data.count, RangeStubProtocol.fileSize)
+        XCTAssertEqual(sink.data, RangeStubProtocol.file)
+        let bounded = requests.filter { $0.range.range(of: #"^bytes=\d+-\d+$"#, options: .regularExpression) != nil }
+        XCTAssertGreaterThan(bounded.count, 1, "\(requests)")
+    }
+
     func testRequestPastTheEndFinishesEmpty() {
         let info = FakeSink(wantsContentInfo: true)
         load(info, lower: 0, upper: 1)

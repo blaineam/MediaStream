@@ -13,23 +13,27 @@
 //  every one, often seconds. That made startup crawl and steady playback
 //  stutter, because each re-request stalled the decoder for that long.
 //
-//  So the engine keeps the upstream connection itself, decoupled from AV's
-//  requests:
+//  So the engine fetches on its own schedule, decoupled from AV's requests:
 //
 //  * Per resource (URL) it keeps up to a few **windows**: contiguous runs of
-//    bytes, each fed by one open-ended upstream request (`bytes=N-`).
-//  * An AV request that starts inside a window (or just past its end) is
-//    served from memory and then fed live from the same connection. No new
-//    upstream request, no new time-to-first-byte.
-//  * A window keeps reading AHEAD after AV cancels, up to a limit that
+//    bytes. A window starts with one open-ended fetch (`bytes=N-`), so the
+//    first bytes flow after a single time-to-first-byte. Bounded fetches
+//    (chunks) then run alongside it further ahead, a few at a time, and the
+//    open-ended one is capped where the first chunk begins. A server whose
+//    single connection is slower than the video's bitrate still keeps up,
+//    and each chunk's time-to-first-byte overlaps the others' transfers.
+//    Chunks are joined in order as they arrive.
+//  * An AV request that starts inside a window (or inside what it is
+//    fetching, or just past that) is served from memory and then fed as the
+//    chunks land. No request of its own, no time-to-first-byte of its own.
+//  * A window keeps fetching AHEAD after AV cancels, up to a limit that
 //    starts small (a thumbnail costs little) and doubles as the window is
-//    actually consumed (sequential playback), capped at `maxAhead`. When it
-//    is that far ahead the connection is closed, and reopened once AV has
-//    used half of it, so the reopen's latency is hidden behind the buffer.
+//    consumed (sequential playback), capped at `maxAhead`. Chunks grow with
+//    the limit.
 //  * Bytes far behind the read position are dropped.
-//  * A failed or stalled upstream (transport error, HTTP error status,
-//    idle past `RCStreamRouting.failoverRequestTimeout` when there is an
-//    alternative) resumes at the window's end on the next candidate from
+//  * A failed or stalled chunk (transport error, HTTP error status, idle
+//    past `RCStreamRouting.failoverRequestTimeout` when there is an
+//    alternative) resumes where it stopped on the next candidate from
 //    `RCStreamRouting`. AV's requests just keep waiting.
 //
 //  Everything runs on one serial queue: AV's resource-loader callbacks and
@@ -65,9 +69,21 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var maxWindowsPerResource = 3
         /// A window nobody has asked anything of for this long stops reading.
         var idleStopAfter: TimeInterval = 15
-        /// How long a request may wait at a full window's end before the
-        /// window reopens its connection anyway.
-        var starvingGrace: TimeInterval = 1
+        /// Chunks fetched at once per window.
+        var parallelFetches = 4
+        /// Chunk size bounds; between them a chunk is a quarter of the
+        /// window's current read-ahead limit.
+        var minChunk: Int64 = 1 << 20
+        var maxChunk: Int64 = 8 << 20
+        /// How far ahead of an open-ended fetch the first chunk starts, in
+        /// bounds. It is already flowing, so it carries playback while the
+        /// chunks pay their time-to-first-byte: the lead is what it moves in
+        /// 1.5 of those, measured. Too long a lead and a slow connection
+        /// carries playback alone; too short and nothing covers the wait.
+        var minOpenEndedLead: Int64 = 2 << 20
+        var maxOpenEndedLead: Int64 = 16 << 20
+        /// How long an open-ended fetch runs before its speed is trusted.
+        var measureFor: TimeInterval = 0.5
         /// A resource with no requests for this long is forgotten.
         var forgetAfter: TimeInterval = 45
     }
@@ -82,6 +98,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var contentLength: Int64?
         var contentType: String?
         var infoKnown = false
+        /// Measured time-to-first-byte (smoothed), seconds.
+        var ttfb: TimeInterval?
         var windows: [Window] = []
         var lastActivity = Date()
         init(url: URL, headers: [String: String]) {
@@ -99,9 +117,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var buffer = Data()
         var end: Int64 { start + Int64(buffer.count) }
         var waiters: [Waiter] = []
-        var task: URLSessionDataTask?
-        var taskRejected = false
-        var taskReceivedBytes = false
+        /// Chunks in flight or waiting to be joined, in byte order.
+        var fetches: [Fetch] = []
         var candidateIndex = 0
         var failuresWithoutProgress = 0
         var aheadLimit: Int64
@@ -114,8 +131,6 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var served: Int64 = 0
         var eof = false
         var lastUsed = Date()
-        /// When a request first waited at `end` with no connection open.
-        var starvingSince: Date?
         init(resource: Resource, candidates: [URL], start: Int64, aheadLimit: Int64) {
             self.resource = resource
             self.candidates = candidates
@@ -124,10 +139,49 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             self.aheadLimit = aheadLimit
         }
         var ahead: Int64 { end - anchor }
+        /// End of what is buffered or being fetched. An open-ended fetch
+        /// counts up to where it has got.
+        var plannedEnd: Int64 {
+            fetches.map { $0.openEnded ? $0.next : $0.stop }.max().map { max($0, end) } ?? end
+        }
         var hasFallback: Bool { candidates.count > 1 }
         var currentURL: URL? {
             candidates.indices.contains(candidateIndex) ? candidates[candidateIndex] : nil
         }
+    }
+
+    /// One bounded range fetch `[offset, stop)` of a window.
+    private final class Fetch {
+        unowned let window: Window
+        /// First byte not yet joined to the window (start of `pending`).
+        var offset: Int64
+        /// Exclusive end; lowered to the file's length once that is known.
+        var stop: Int64
+        /// Requested as `bytes=N-` and not yet capped: it reserves only
+        /// `next + chunk` for planning, and is capped (`stop` set, connection
+        /// closed on reaching it) when a chunk is planned after it.
+        var openEnded = false
+        /// Received but not yet contiguous with the window.
+        var pending = Data()
+        var task: URLSessionDataTask?
+        var rejected = false
+        var receivedBytes = false
+        var startedAt = Date()
+        var firstByteAt: Date?
+        var bytesSinceFirst: Int64 = 0
+        /// Measured transfer rate, bytes/s, once it has run long enough.
+        func rate(after warmup: TimeInterval) -> Double? {
+            guard let firstByteAt else { return nil }
+            let elapsed = Date().timeIntervalSince(firstByteAt)
+            return elapsed >= warmup ? Double(bytesSinceFirst) / elapsed : nil
+        }
+        init(window: Window, offset: Int64, stop: Int64) {
+            self.window = window
+            self.offset = offset
+            self.stop = stop
+        }
+        /// Where a restart resumes.
+        var next: Int64 { offset + Int64(pending.count) }
     }
 
     private final class Waiter {
@@ -147,7 +201,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     private var resources: [String: Resource] = [:]
     private var waiterWindows: [ObjectIdentifier: Window] = [:]
     private var waiters: [ObjectIdentifier: Waiter] = [:]
-    private var taskWindows: [Int: Window] = [:]
+    private var taskFetches: [Int: Fetch] = [:]
     private var engineCancelled: Set<Int> = []
     /// Requests AV cancelled before they reached `load` (headers in flight).
     private var cancelledEarly: Set<ObjectIdentifier> = []
@@ -156,8 +210,9 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     /// MEDIASTREAM_RC_DEBUG=1 logs every request, window and connection.
     private static let debug = ProcessInfo.processInfo.environment["MEDIASTREAM_RC_DEBUG"] != nil
     private func log(_ message: @autoclosure () -> String) {
-        if Self.debug { print("[RCReadAhead] \(message())") }
+        if Self.debug { print(String(format: "[RCReadAhead %.2f] ", Date().timeIntervalSince(Self.debugEpoch)) + message()) }
     }
+    private static let debugEpoch = Date()
     private static func mb(_ bytes: Int64) -> String { String(format: "%.1fMB", Double(bytes) / 1_048_576) }
 
     init(queue: DispatchQueue, configuration: URLSessionConfiguration? = nil, tuning: Tuning = Tuning()) {
@@ -170,6 +225,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             c.timeoutIntervalForRequest = 60
             c.timeoutIntervalForResource = 0
             c.urlCache = nil
+            // Room for every window's parallel fetches (iOS defaults to 4).
+            c.httpMaximumConnectionsPerHost = 8
             return c
         }()
         let delegateQueue = OperationQueue()
@@ -228,7 +285,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         }
 
         let window = window(for: waiter.offset, in: resource)
-        log("load \(waiter.offset)-\(upper.map(String.init) ?? "") → window \(Self.mb(window.start))..\(Self.mb(window.end)) task=\(window.task != nil) windows=\(resource.windows.count)")
+        log("load \(waiter.offset)-\(upper.map(String.init) ?? "") → window \(Self.mb(window.start))..\(Self.mb(window.end)) fetching=\(window.fetches.count) windows=\(resource.windows.count)")
         window.waiters.append(waiter)
         window.anchor = max(window.anchor, waiter.offset)
         window.lastUsed = Date()
@@ -259,9 +316,9 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
 
     private func window(for offset: Int64, in resource: Resource) -> Window {
         let joinable = resource.windows.filter {
-            $0.start <= offset && offset <= $0.end + tuning.joinGap && !($0.eof && offset > $0.end)
+            $0.start <= offset && offset <= $0.plannedEnd + tuning.joinGap && !($0.eof && offset > $0.end)
         }
-        if let best = joinable.max(by: { $0.end < $1.end }) { return best }
+        if let best = joinable.max(by: { $0.plannedEnd < $1.plannedEnd }) { return best }
 
         // Make room: drop idle windows, least recently used first.
         if resource.windows.count >= tuning.maxWindowsPerResource {
@@ -277,7 +334,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     }
 
     private func drop(_ window: Window) {
-        stopUpstream(window)
+        stopFetches(window)
         window.resource.windows.removeAll { $0 === window }
         window.buffer = Data()
     }
@@ -333,7 +390,9 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     private func trim(_ window: Window) {
         let lowest = window.waiters.map(\.offset).min().map { min($0, window.anchor) } ?? window.anchor
         let keepFrom = lowest - tuning.keepBehind
-        let excess = keepFrom - window.start
+        // A request can start past the buffered end (it joined bytes still
+        // being fetched), so never trim past the buffer itself.
+        let excess = min(keepFrom - window.start, Int64(window.buffer.count))
         guard excess > max(tuning.keepBehind, 4 << 20) else { return }
         window.buffer = window.buffer.subdata(in: Int(excess)..<window.buffer.count)
         window.start += excess
@@ -341,56 +400,98 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
 
     // MARK: - Upstream
 
-    /// Start, keep or stop the window's upstream connection.
-    private func pump(_ window: Window) {
-        guard window.resource.windows.contains(where: { $0 === window }) else { return }
-        if let length = window.resource.contentLength, window.end >= length { window.eof = true }
-        let wanted = !window.waiters.isEmpty
-        let recent = Date().timeIntervalSince(window.lastUsed) < tuning.idleStopAfter
+    private func chunkSize(_ window: Window) -> Int64 {
+        min(max(window.aheadLimit / 4, tuning.minChunk), tuning.maxChunk)
+    }
 
-        if window.task != nil {
-            if !wanted && (window.ahead >= window.aheadLimit || !recent) {
-                stopUpstream(window)
-            }
+    /// Start chunks the window needs, or stop fetching for an idle window.
+    private func pump(_ window: Window) {
+        guard !invalidated, window.resource.windows.contains(where: { $0 === window }) else { return }
+        let resource = window.resource
+        if let length = resource.contentLength, window.end >= length { window.eof = true }
+        let recent = Date().timeIntervalSince(window.lastUsed) < tuning.idleStopAfter
+        if window.waiters.isEmpty && !recent {
+            stopFetches(window)
             return
         }
         guard !window.eof else { return }
 
-        // Reopen once half the read-ahead is used, so the reopen's latency
-        // hides behind what's still buffered.
-        if (wanted || recent) && window.ahead < window.aheadLimit / 2 {
-            startUpstream(window)
-            return
+        // Someone is waiting for bytes past what's buffered. AV keeps an
+        // open request taking whatever arrives until its own buffer is
+        // full, so while it does, read on past the usual limit (bounded).
+        let hungry = window.waiters.contains { $0.sink.hasDataRequest && !$0.infoPending && $0.offset >= window.end }
+            || (window.waiters.contains { $0.infoPending } && !resource.infoKnown)
+        let limit = hungry ? tuning.maxAhead * 2 : window.aheadLimit
+
+        // An open-ended fetch that nobody is waiting on stops at the limit.
+        if !hungry, let open = window.fetches.first(where: { $0.openEnded }),
+           open.next - window.anchor >= window.aheadLimit {
+            cap(open, at: open.next)
         }
-        // Content info is only learned from a response.
-        if window.waiters.contains(where: { $0.infoPending }) && !window.resource.infoKnown {
-            startUpstream(window)
-            return
-        }
-        // A request waiting at the window's end while plenty is buffered
-        // behind it is usually AV over-asking: it takes what it's handed,
-        // cancels, and asks again further on. Reopen only if it is still
-        // waiting a moment later.
-        let starving = window.waiters.contains { $0.sink.hasDataRequest && $0.offset >= window.end }
-        if !starving {
-            window.starvingSince = nil
-        } else if let since = window.starvingSince {
-            if Date().timeIntervalSince(since) >= tuning.starvingGrace {
-                window.starvingSince = nil
-                startUpstream(window)
+
+        while window.fetches.filter({ $0.task != nil }).count < tuning.parallelFetches {
+            // Playback (someone waiting) gets big chunks straight away.
+            let chunk = hungry ? tuning.maxChunk : chunkSize(window)
+            if window.fetches.isEmpty {
+                // Nothing in flight: one open-ended fetch from the end.
+                let from = window.end
+                if let length = resource.contentLength, from >= length { return }
+                guard hungry || from - window.anchor < window.aheadLimit else { return }
+                let fetch = Fetch(window: window, offset: from, stop: resource.contentLength ?? .max)
+                fetch.openEnded = true
+                window.fetches.append(fetch)
+                start(fetch)
+                // Not started (no usable URL: the window was failed and dropped).
+                if fetch.task == nil { return }
+                continue
             }
-        } else {
-            window.starvingSince = Date()
-            queue.asyncAfter(deadline: .now() + tuning.starvingGrace) { [weak self, weak window] in
-                guard let self, let window else { return }
-                self.pump(window)
+            // Until the first answer gives the length, one fetch at a time.
+            guard resource.infoKnown else { return }
+            // Chunks go after what's planned; an open-ended fetch keeps a
+            // lead of its own before them, since it is already flowing.
+            let open = window.fetches.first { $0.openEnded }
+            var lead: Int64 = 0
+            if let open {
+                // Wait until its speed is known (data keeps calling pump).
+                guard let rate = open.rate(after: tuning.measureFor) else { return }
+                let wait = resource.ttfb ?? 1
+                lead = min(max(Int64(rate * wait * 1.5), tuning.minOpenEndedLead), tuning.maxOpenEndedLead)
             }
+            let from = max(window.plannedEnd, open.map { $0.next + lead } ?? 0)
+            if let length = resource.contentLength, from >= length { return }
+            guard from - window.anchor < limit else { return }
+            if let open { cap(open, at: from) }
+            var stop = from + chunk
+            if let length = resource.contentLength { stop = min(stop, length) }
+            let fetch = Fetch(window: window, offset: from, stop: stop)
+            window.fetches.append(fetch)
+            start(fetch)
+            if fetch.task == nil { return }
         }
     }
 
-    private func startUpstream(_ window: Window) {
+    /// Bound an open-ended fetch at `offset`; its connection closes when it
+    /// gets there (at once if it already has).
+    private func cap(_ fetch: Fetch, at offset: Int64) {
+        fetch.openEnded = false
+        fetch.stop = min(fetch.stop, max(offset, fetch.next))
+        if fetch.next >= fetch.stop { finishEarly(fetch) }
+    }
+
+    /// Close a fetch's connection because it has everything it should.
+    private func finishEarly(_ fetch: Fetch) {
+        guard let task = fetch.task else { return }
+        engineCancelled.insert(task.taskIdentifier)
+        taskFetches.removeValue(forKey: task.taskIdentifier)
+        fetch.task = nil
+        task.cancel()
+        drain(fetch.window)
+    }
+
+    private func start(_ fetch: Fetch) {
         // A task on an invalidated session raises an exception.
         guard !invalidated else { return }
+        let window = fetch.window
         guard let url = window.currentURL else {
             fail(window, error: URLError(.badURL))
             return
@@ -400,26 +501,46 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         if window.hasFallback {
             request.timeoutInterval = RCStreamRouting.failoverRequestTimeout
         }
-        request.setValue("bytes=\(window.end)-", forHTTPHeaderField: "Range")
+        let range = fetch.openEnded ? "bytes=\(fetch.next)-" : "bytes=\(fetch.next)-\(fetch.stop - 1)"
+        request.setValue(range, forHTTPHeaderField: "Range")
         for (key, value) in window.resource.headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
         let task = session.dataTask(with: request)
-        log("open bytes=\(window.end)- waiters=\(window.waiters.count) ahead=\(Self.mb(window.ahead))")
-        window.task = task
-        window.taskRejected = false
-        window.taskReceivedBytes = false
-        taskWindows[task.taskIdentifier] = window
+        log("fetch \(range) waiters=\(window.waiters.count) ahead=\(Self.mb(window.ahead)) limit=\(Self.mb(window.aheadLimit))")
+        fetch.task = task
+        fetch.rejected = false
+        fetch.receivedBytes = false
+        fetch.startedAt = Date()
+        fetch.firstByteAt = nil
+        fetch.bytesSinceFirst = 0
+        taskFetches[task.taskIdentifier] = fetch
         task.resume()
     }
 
-    private func stopUpstream(_ window: Window) {
-        guard let task = window.task else { return }
-        log("close at \(Self.mb(window.end)) ahead=\(Self.mb(window.ahead)) limit=\(Self.mb(window.aheadLimit))")
-        engineCancelled.insert(task.taskIdentifier)
-        taskWindows.removeValue(forKey: task.taskIdentifier)
-        window.task = nil
-        task.cancel()
+    private func stopFetches(_ window: Window) {
+        for fetch in window.fetches {
+            guard let task = fetch.task else { continue }
+            engineCancelled.insert(task.taskIdentifier)
+            taskFetches.removeValue(forKey: task.taskIdentifier)
+            task.cancel()
+        }
+        if !window.fetches.isEmpty { log("stop fetching at \(Self.mb(window.end))") }
+        window.fetches.removeAll()
+    }
+
+    /// Join arrived chunks to the window in byte order.
+    private func drain(_ window: Window) {
+        window.fetches.sort { $0.offset < $1.offset }
+        while let head = window.fetches.first, head.offset == window.end {
+            if !head.pending.isEmpty {
+                window.buffer.append(head.pending)
+                head.offset += Int64(head.pending.count)
+                head.pending = Data()
+            }
+            guard head.offset >= head.stop, head.task == nil else { break }
+            window.fetches.removeFirst()
+        }
     }
 
     /// Every candidate failed: fail the window's requests and forget it, so
@@ -432,16 +553,22 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     }
 
     private func handleResponse(_ task: URLSessionDataTask, response: URLResponse) -> Bool {
-        guard let window = taskWindows[task.taskIdentifier], window.task === task else { return false }
+        guard let fetch = taskFetches[task.taskIdentifier], fetch.task === task else { return false }
+        let window = fetch.window
+        let resource = window.resource
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 200
-        // An error page isn't media, and a 200 to a mid-file range would put
-        // the file's start where AV expects later bytes.
-        if status >= 400 || (status == 200 && window.end > 0) {
-            window.taskRejected = true
+        if status == 416 {
+            // Asked past the end (the length wasn't known yet).
+            fetch.stop = fetch.next
             return false
         }
-        let resource = window.resource
+        // An error page isn't media, and a 200 to a mid-file range would put
+        // the file's start where AV expects later bytes.
+        if status >= 400 || (status == 200 && fetch.next > 0) {
+            fetch.rejected = true
+            return false
+        }
         if let http {
             if let range = http.value(forHTTPHeaderField: "Content-Range"),
                let total = range.split(separator: "/").last, let length = Int64(total) {
@@ -454,19 +581,40 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
                 resource.contentType = type
             }
         }
+        if let length = resource.contentLength {
+            // Chunks planned before the length was known may lie past it.
+            for other in window.fetches where other !== fetch && other.offset >= length {
+                if let task = other.task {
+                    engineCancelled.insert(task.taskIdentifier)
+                    taskFetches.removeValue(forKey: task.taskIdentifier)
+                    task.cancel()
+                }
+            }
+            window.fetches.removeAll { $0 !== fetch && $0.offset >= length }
+            for other in window.fetches { other.stop = min(other.stop, length) }
+        }
         resource.infoKnown = true
+        let wait = Date().timeIntervalSince(fetch.startedAt)
+        resource.ttfb = resource.ttfb.map { $0 * 0.7 + wait * 0.3 } ?? wait
         if let url = window.currentURL {
             RCStreamRouting.reportSuccess?(url, 0)
         }
         serve(window)
+        // The length is known now: the other chunks can start.
+        pump(window)
         return true
     }
 
     private func handleData(_ task: URLSessionDataTask, data: Data) {
-        guard !invalidated, let window = taskWindows[task.taskIdentifier], window.task === task else { return }
-        window.buffer.append(data)
-        window.taskReceivedBytes = true
+        guard !invalidated, let fetch = taskFetches[task.taskIdentifier], fetch.task === task else { return }
+        let window = fetch.window
+        let room = fetch.stop - fetch.next
+        fetch.pending.append(Int64(data.count) > room ? data.prefix(Int(max(0, room))) : data)
+        fetch.receivedBytes = true
+        if fetch.firstByteAt == nil { fetch.firstByteAt = Date() } else { fetch.bytesSinceFirst += Int64(data.count) }
+        if fetch.next >= fetch.stop { finishEarly(fetch) }
         window.failuresWithoutProgress = 0
+        drain(window)
         serve(window)
         pump(window)
     }
@@ -474,31 +622,38 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     private func handleCompletion(_ task: URLSessionTask, error: Error?) {
         let id = task.taskIdentifier
         if engineCancelled.remove(id) != nil || invalidated { return }
-        guard let window = taskWindows.removeValue(forKey: id), window.task === task else { return }
-        window.task = nil
+        guard let fetch = taskFetches.removeValue(forKey: id), fetch.task === task else { return }
+        let window = fetch.window
+        fetch.task = nil
+        guard window.resource.windows.contains(where: { $0 === window }) else { return }
 
         // A cancellation the engine didn't ask for (the session going away)
         // says nothing about the server. A rejected response is cancelled by
         // the engine too, but is a real failure.
         let cancelled = (error as? URLError)?.code == .cancelled
-        if cancelled && !window.taskRejected { return }
-        let failed = window.taskRejected || error != nil
-        guard failed else {
-            // An open-ended range that completes normally reached the end.
-            window.eof = true
+        if cancelled && !fetch.rejected && fetch.stop > fetch.next { return }
+        let complete = fetch.next >= fetch.stop
+        if !fetch.rejected && (error == nil || complete) {
+            if !complete {
+                // The server ended early: that is the end of the file.
+                fetch.stop = fetch.next
+                window.resource.contentLength = fetch.next
+            }
+            drain(window)
             serve(window)
+            pump(window)
             return
         }
 
         if let url = window.currentURL { RCStreamRouting.reportFailure?(url) }
-        if !window.taskReceivedBytes { window.failuresWithoutProgress += 1 }
+        if !fetch.receivedBytes { window.failuresWithoutProgress += 1 }
         if window.failuresWithoutProgress >= window.candidates.count {
             // Each candidate has failed in turn without delivering a byte.
             // Only bother AV when it's waiting; otherwise just stop reading.
             if window.waiters.isEmpty {
                 drop(window)
             } else {
-                let status = window.taskRejected
+                let status = fetch.rejected
                     ? NSError(domain: NSURLErrorDomain, code: NSURLErrorResourceUnavailable,
                               userInfo: [NSLocalizedDescriptionKey: "The media server returned an error"])
                     : (error ?? URLError(.cannotConnectToHost))
@@ -506,10 +661,10 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             }
             return
         }
-        // Resume the same bytes on the next copy (or, with a single copy that
-        // was making progress, on the same one).
+        // Resume this chunk where it stopped on the next copy (or, with a
+        // single copy that was making progress, on the same one).
         window.candidateIndex = (window.candidateIndex + 1) % window.candidates.count
-        pump(window)
+        start(fetch)
     }
 
     // MARK: - Housekeeping

@@ -2,6 +2,15 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.18.0] - 2026-11-09
+
+### Fixed (stutter when one connection is slower than the video)
+
+- **Playback still paused and resumed in bursts when a single connection to the server was slower than the video's bitrate** (pCloud through rclone with a high-bitrate movie). 2.17's read-ahead fed each window from ONE connection, so its speed capped the stream: a 25 Mbps video over 18 Mbps connections paused 32 times in a minute in the benchmark.
+- **Windows now fetch in parallel.** A window starts with one open-ended fetch so the first bytes flow after a single wait, then runs bounded chunks (up to 4 at a time, 8 MB during playback) further ahead and caps the open-ended fetch where the first chunk begins. Each chunk's time-to-first-byte overlaps the others' transfers. Where the first chunk begins is measured, not fixed: the open-ended fetch's speed over its first half second times 1.5 server waits (2–16 MB).
+- Benchmarks (90 s H.264, local server with a fixed wait per request and a per-connection rate cap): 25 Mbps over 18 Mbps connections with a 1.5 s wait went from 32 pauses to none; 25 Mbps over 40 Mbps with a 4 s wait, 0 stalls; 10 Mbps over 16 Mbps with a 3 s wait starts in 4.6 s as before. Seeks into the read-ahead resume in about 0.4 s.
+- A chunk that fails or stalls resumes where it stopped on the next mirror, as before.
+
 ## [2.17.1] - 2026-11-09
 
 ### Fixed
