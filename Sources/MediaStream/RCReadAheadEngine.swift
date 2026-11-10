@@ -107,7 +107,10 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         /// Smallest read-ahead a window keeps once its read speed is known.
         var minAhead: Int64 = 2 << 20
         /// Read-ahead a window keeps, in seconds of its measured read speed.
-        var aheadSeconds: TimeInterval = 25
+        var aheadSeconds: TimeInterval = 40
+        /// At most this much already-handed data is kept behind the furthest
+        /// byte handed out (on top of `keepBehind`).
+        var maxHandedRetained: Int64 = 64 << 20
         /// How long a window is read before its speed is trusted, and over
         /// how long the speed is measured.
         var rateWarmup: TimeInterval = 4
@@ -190,6 +193,9 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             self.aheadLimit = aheadLimit
         }
         var ahead: Int64 { end - anchor }
+        /// Furthest byte handed to any request.
+        var handedOut: Int64 = 0
+
         /// End of what is buffered or being fetched. An open-ended fetch
         /// counts up to where it has got.
         var plannedEnd: Int64 {
@@ -443,6 +449,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
                 waiter.sink.respond(with: window.buffer.subdata(in: from..<to))
                 window.served += limit - waiter.offset
                 waiter.offset = limit
+                window.handedOut = max(window.handedOut, limit)
             }
         }
         // Finish whoever is complete.
@@ -475,7 +482,11 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     /// Drop bytes well behind every reader. Done in steps, not per chunk,
     /// so the buffer isn't re-copied constantly.
     private func trim(_ window: Window) {
-        let lowest = window.waiters.map(\.offset).min().map { min($0, window.anchor) } ?? window.anchor
+        // Bytes already handed out are kept for AV's re-requests (it often
+        // asks again a little before where it stopped), but not without end:
+        // an open request can take a lot into AV's own buffer.
+        let keepFromHanded = max(window.anchor, window.handedOut - tuning.maxHandedRetained)
+        let lowest = window.waiters.map(\.offset).min().map { min($0, keepFromHanded) } ?? keepFromHanded
         let keepFrom = lowest - tuning.keepBehind
         // A request can start past the buffered end (it joined bytes still
         // being fetched), so never trim past the buffer itself.
@@ -516,7 +527,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
 
         // An open-ended fetch that nobody is waiting on stops at the limit.
         if !hungry, let open = window.fetches.first(where: { $0.openEnded }),
-           open.next - window.anchor >= limit {
+           open.next - readAheadBase(window) >= limit {
             cap(open, at: open.next)
         }
 
@@ -535,7 +546,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
                 // Nothing in flight: one open-ended fetch from the end.
                 let from = window.end
                 if let length = resource.contentLength, from >= length { return }
-                guard hungry || from - window.anchor < limit else { return }
+                guard hungry || from - readAheadBase(window) < limit else { return }
                 let fetch = Fetch(window: window, offset: from, stop: resource.contentLength ?? .max)
                 fetch.openEnded = true
                 window.fetches.append(fetch)
@@ -558,7 +569,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             }
             let from = max(window.plannedEnd, open.map { $0.next + lead } ?? 0)
             if let length = resource.contentLength, from >= length { return }
-            guard from - window.anchor < limit else { return }
+            guard from - readAheadBase(window) < limit else { return }
             if let open { cap(open, at: from) }
             var stop = from + chunk
             if let length = resource.contentLength { stop = min(stop, length) }
@@ -573,6 +584,20 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         for resource in resources.values {
             for window in resource.windows where window !== skipped { pump(window) }
         }
+    }
+
+    /// Where read-ahead is measured from. AV takes whatever an open request
+    /// is handed into its own buffer and asks again only near that buffer's
+    /// end; measured from where its request STARTED, the read-ahead is used
+    /// up by then, the next request finds nothing waiting, and playback dips
+    /// to a near-empty buffer. So it counts from what has been handed out,
+    /// but no further than `aheadSeconds` of the reader's speed past its
+    /// request start: AV also discards what it is handed beyond its buffer,
+    /// and chasing that would fetch without end.
+    private func readAheadBase(_ window: Window) -> Int64 {
+        guard window.handedOut > window.anchor, let speed = readSpeed(window) else { return window.anchor }
+        let plausible = window.anchor + Int64(speed * tuning.aheadSeconds)
+        return max(window.anchor, min(window.handedOut, plausible))
     }
 
     /// Read-ahead allowed for `window` when no request is waiting: the

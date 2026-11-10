@@ -55,6 +55,7 @@ final class RCStreamPlaybackLab: XCTestCase {
         var waiting: TimeInterval = 0
         var transitions = 0
         var wasPlaying = true
+        var minBuffered = Double.infinity
         let playStart = Date()
         while Date().timeIntervalSince(playStart) < seconds {
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -66,6 +67,13 @@ final class RCStreamPlaybackLab: XCTestCase {
                              item.loadedTimeRanges.last.map { CMTimeRangeGetEnd($0.timeRangeValue).seconds } ?? 0))
             }
             wasPlaying = playing
+            // Lowest buffer after the first 15 s (startup excluded).
+            if Date().timeIntervalSince(playStart) > 15 {
+                let now = player.currentTime().seconds
+                let ahead = item.loadedTimeRanges.map { CMTimeRangeGetEnd($0.timeRangeValue).seconds }
+                    .filter { $0 >= now }.max().map { $0 - now } ?? 0
+                minBuffered = min(minBuffered, ahead)
+            }
         }
         let position = player.currentTime().seconds
 
@@ -80,8 +88,8 @@ final class RCStreamPlaybackLab: XCTestCase {
         let seek = Date().timeIntervalSince(s0)
         player.pause()
 
-        return String(format: "start=%.2fs played=%.1fs/%.0fs waiting=%.1fs pauses=%d stalls=%d seekResume=%.2fs",
-                      start, position, seconds, waiting, transitions, stalls, seek)
+        return String(format: "start=%.2fs played=%.1fs/%.0fs waiting=%.1fs pauses=%d stalls=%d seekResume=%.2fs minBuffered=%.1fs",
+                      start, position, seconds, waiting, transitions, stalls, seek, minBuffered)
     }
 
     @MainActor

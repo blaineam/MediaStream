@@ -2,6 +2,15 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.22.0] - 2026-11-09
+
+### Fixed (buffer dips during playback)
+
+- **Playback's buffer kept dropping to a few seconds, with an occasional short pause.** AVPlayer takes what an open request is handed into its own buffer (about 30–45 s on tvOS) and asks again only near that buffer's end. Read-ahead was measured from where its request STARTED, so by the time AV asked again it had all been handed over, the engine had gone idle (0 connections), and the next request waited on the network with only seconds left in AV's buffer.
+- Read-ahead is now measured from what has been handed out, bounded by `aheadSeconds` of the reader's speed past its request start (AV also discards what it's handed beyond its buffer; chasing that would fetch without end). `aheadSeconds` is 40 (was 25).
+- Handed-out bytes kept for AV's re-requests are capped at `maxHandedRetained` (64 MB) behind the furthest byte handed out, so a high-bitrate stream doesn't hold hundreds of megabytes.
+- Benchmark (10 Mbps H.264, 0.3 s wait, 30 Mbps per connection, 45 Mbps shared): 6 pauses in 55 s before, none after. `RCStreamPlaybackLab` now also reports the lowest buffer after startup.
+
 ## [2.21.0] - 2026-11-09
 
 ### Added
