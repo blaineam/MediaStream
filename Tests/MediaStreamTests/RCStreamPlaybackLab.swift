@@ -40,7 +40,22 @@ final class RCStreamPlaybackLab: XCTestCase {
     @MainActor
     private static func run(url: URL, seconds: Double) async throws -> String {
         let asset = AVURLAsset.makeForRCStream(url: url)
-        let item = AVPlayerItem(asset: asset)
+        let item: AVPlayerItem
+        // Only video and audio, in a composition: the player never sees the
+        // subtitle track at all.
+        if ProcessInfo.processInfo.environment["STREAMLAB_COMPOSE"] != nil {
+            let composition = AVMutableComposition()
+            let duration = try await asset.load(.duration)
+            for track in try await asset.load(.tracks) where track.mediaType == .video || track.mediaType == .audio {
+                guard let target = composition.addMutableTrack(withMediaType: track.mediaType,
+                                                               preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+                try target.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: .zero)
+                target.preferredTransform = try await track.load(.preferredTransform)
+            }
+            item = AVPlayerItem(asset: composition)
+        } else {
+            item = AVPlayerItem(asset: asset)
+        }
         // The host app's forward-buffer target (Enter Space's tvOS player sets 30).
         if let fwd = Double(ProcessInfo.processInfo.environment["STREAMLAB_FWD"] ?? "") {
             item.preferredForwardBufferDuration = fwd

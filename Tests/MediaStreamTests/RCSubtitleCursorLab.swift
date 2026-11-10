@@ -23,7 +23,7 @@ final class RCSubtitleCursorLab: XCTestCase {
         guard let track = tracks.first else { XCTFail("no subtitle track"); return }
         let formats = try await track.load(.formatDescriptions)
         let subtype = formats.first.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0
-        print("CURSORLAB track \(track.trackID) type=\(track.mediaType.rawValue) subtype=\(String(format: "%08x", subtype)) canCursor=\(track.canProvideSampleCursors) loadedIn=\(Date().timeIntervalSince(t0))")
+        print("CURSORLAB track \(track.trackID) type=\(track.mediaType.rawValue) subtype=\(String(format: "%08x", subtype)) loadedIn=\(Date().timeIntervalSince(t0))")
         if let group = try await asset.loadMediaSelectionGroup(for: .legible) {
             for option in group.options {
                 print("CURSORLAB option \(option.displayName) plist=\(option.propertyList()) tag=\(option.extendedLanguageTag ?? "-")")
