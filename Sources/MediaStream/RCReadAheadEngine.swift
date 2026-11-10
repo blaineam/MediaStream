@@ -92,7 +92,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         var keepBehind: Int64 = 8 << 20
         /// A request starting at most this far past a window's end joins it.
         var joinGap: Int64 = 1 << 20
-        var maxWindowsPerResource = 3
+        var maxWindowsPerResource = 6
         /// A window nobody has asked anything of for this long stops reading.
         var idleStopAfter: TimeInterval = 15
         /// Chunks fetched at once per window.
@@ -100,6 +100,18 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         /// While a request is waiting on bytes not yet fetched (the network
         /// is behind the video), up to this many.
         var maxParallelFetches = 8
+        /// Read-ahead connections across every stream at once (the session's
+        /// per-host limit). A fetch a request is waiting on may start beyond
+        /// it, at high priority, so it is never queued behind read-ahead.
+        var maxConnections = 8
+        /// Smallest read-ahead a window keeps once its read speed is known.
+        var minAhead: Int64 = 2 << 20
+        /// Read-ahead a window keeps, in seconds of its measured read speed.
+        var aheadSeconds: TimeInterval = 25
+        /// How long a window is read before its speed is trusted, and over
+        /// how long the speed is measured.
+        var rateWarmup: TimeInterval = 4
+        var rateWindow: TimeInterval = 20
         /// Chunk size bounds; between them a chunk is a quarter of the
         /// window's current read-ahead limit.
         var minChunk: Int64 = 1 << 20
@@ -162,6 +174,12 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         /// during playback.
         var anchor: Int64
         var served: Int64 = 0
+        /// (time, anchor) each time a request moved the anchor forward: how
+        /// fast the reader really advances through this window (AV takes
+        /// whatever an open request is handed, so bytes handed out overstate
+        /// it; where its requests start does not).
+        var anchorLog: [(Date, Int64)] = []
+        let createdAt = Date()
         var eof = false
         var lastUsed = Date()
         init(resource: Resource, candidates: [URL], start: Int64, aheadLimit: Int64) {
@@ -344,7 +362,10 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         let window = window(for: waiter.offset, in: resource)
         log("load \(waiter.offset)-\(upper.map(String.init) ?? "") → window \(Self.mb(window.start))..\(Self.mb(window.end)) fetching=\(window.fetches.count) windows=\(resource.windows.count)")
         window.waiters.append(waiter)
-        window.anchor = max(window.anchor, waiter.offset)
+        if waiter.offset > window.anchor {
+            window.anchor = waiter.offset
+            window.anchorLog.append((Date(), waiter.offset))
+        }
         window.lastUsed = Date()
         waiters[id] = waiter
         waiterWindows[id] = window
@@ -478,27 +499,37 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         // full, so while it does, read on past the usual limit (bounded).
         let hungry = window.waiters.contains { $0.sink.hasDataRequest && !$0.infoPending && $0.offset >= window.end }
             || (window.waiters.contains { $0.infoPending } && !resource.infoKnown)
-        let limit = hungry ? tuning.maxAhead * 2 : window.aheadLimit
+        // While a request waits, read past the usual limit, but only as far
+        // as this window is actually being read: a movie whose tracks lie
+        // apart has a window per track, and the subtitle track's open request
+        // must not pull tens of megabytes of video.
+        let limit = hungry ? max(window.aheadLimit, readSpeedLimit(window, cap: tuning.maxAhead * 2)) : effectiveLimit(window)
 
         // An open-ended fetch that nobody is waiting on stops at the limit.
         if !hungry, let open = window.fetches.first(where: { $0.openEnded }),
-           open.next - window.anchor >= window.aheadLimit {
+           open.next - window.anchor >= limit {
             cap(open, at: open.next)
         }
 
         let slots = hungry ? tuning.maxParallelFetches : tuning.parallelFetches
         while window.fetches.filter({ $0.task != nil }).count < slots {
+            // Every stream shares the connections. Bytes a request waits on
+            // (the fetch at the window's end) may always start; read-ahead
+            // waits for a free one, so nothing queues inside URLSession ahead
+            // of what a request needs.
+            let urgent = hungry && window.plannedEnd <= window.end
+            guard urgent || taskFetches.count < tuning.maxConnections else { return }
             // Playback (someone waiting) gets big chunks straight away.
             let chunk = hungry ? tuning.maxChunk : chunkSize(window)
             if window.fetches.isEmpty {
                 // Nothing in flight: one open-ended fetch from the end.
                 let from = window.end
                 if let length = resource.contentLength, from >= length { return }
-                guard hungry || from - window.anchor < window.aheadLimit else { return }
+                guard hungry || from - window.anchor < limit else { return }
                 let fetch = Fetch(window: window, offset: from, stop: resource.contentLength ?? .max)
                 fetch.openEnded = true
                 window.fetches.append(fetch)
-                start(fetch)
+                start(fetch, urgent: urgent)
                 // Not started (no usable URL: the window was failed and dropped).
                 if fetch.task == nil { return }
                 continue
@@ -523,9 +554,48 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             if let length = resource.contentLength { stop = min(stop, length) }
             let fetch = Fetch(window: window, offset: from, stop: stop)
             window.fetches.append(fetch)
-            start(fetch)
+            start(fetch, urgent: urgent)
             if fetch.task == nil { return }
         }
+    }
+
+    private func pumpAll(except skipped: Window? = nil) {
+        for resource in resources.values {
+            for window in resource.windows where window !== skipped { pump(window) }
+        }
+    }
+
+    /// Read-ahead allowed for `window` when no request is waiting: the
+    /// startup ramp (`aheadLimit`), and once the reader's speed is known, no
+    /// more than `aheadSeconds` of it. A movie whose tracks lie apart has a
+    /// window per track; the subtitle track's window must not fetch tens of
+    /// megabytes of video to serve a few kilobytes.
+    private func effectiveLimit(_ window: Window) -> Int64 {
+        guard let speed = readSpeed(window) else { return window.aheadLimit }
+        return min(window.aheadLimit, max(tuning.minAhead, Int64(speed * tuning.aheadSeconds)))
+    }
+
+    /// `aheadSeconds` of the reader's speed, at most `cap`; `cap` until the
+    /// speed is known.
+    private func readSpeedLimit(_ window: Window, cap: Int64) -> Int64 {
+        guard let speed = readSpeed(window) else { return cap }
+        return min(cap, max(tuning.minAhead, Int64(speed * tuning.aheadSeconds)))
+    }
+
+    /// Bytes per second the reader advances through `window`, from where its
+    /// requests start; nil until it has asked more than once and for a while
+    /// (a single long open request, as at startup, says nothing yet).
+    private func readSpeed(_ window: Window) -> Double? {
+        let now = Date()
+        guard now.timeIntervalSince(window.createdAt) >= tuning.rateWarmup,
+              window.anchorLog.count >= 2 else { return nil }
+        // Keep one sample older than the measuring window as the baseline.
+        while window.anchorLog.count > 2, now.timeIntervalSince(window.anchorLog[1].0) > tuning.rateWindow {
+            window.anchorLog.removeFirst()
+        }
+        guard let first = window.anchorLog.first else { return nil }
+        let span = max(1, now.timeIntervalSince(first.0))
+        return Double(window.anchor - first.1) / span
     }
 
     /// Bound an open-ended fetch at `offset`; its connection closes when it
@@ -546,7 +616,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         drain(fetch.window)
     }
 
-    private func start(_ fetch: Fetch) {
+    private func start(_ fetch: Fetch, urgent: Bool = false) {
         // A task on an invalidated session raises an exception.
         guard !invalidated else { return }
         let window = fetch.window
@@ -565,6 +635,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
         let task = session.dataTask(with: request)
+        task.priority = urgent ? URLSessionTask.highPriority : URLSessionTask.lowPriority
         log("fetch \(range) waiters=\(window.waiters.count) ahead=\(Self.mb(window.ahead)) limit=\(Self.mb(window.aheadLimit))")
         fetch.task = task
         fetch.rejected = false
@@ -708,6 +779,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             drain(window)
             serve(window)
             pump(window)
+            // A connection is free: other windows may be waiting for one.
+            pumpAll(except: window)
             return
         }
 
@@ -730,7 +803,7 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         // Resume this chunk where it stopped on the next copy (or, with a
         // single copy that was making progress, on the same one).
         window.candidateIndex = (window.candidateIndex + 1) % window.candidates.count
-        start(fetch)
+        start(fetch, urgent: fetch.offset <= window.end)
     }
 
     // MARK: - Housekeeping

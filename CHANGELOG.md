@@ -2,6 +2,16 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.20.0] - 2026-11-09
+
+### Fixed (constant rebuffering of a movie whose tracks lie apart)
+
+- **A movie with subtitles (or audio) stored away from its video kept stopping at 0 s buffered while the network ran flat out.** AVPlayer reads such a file at several far-apart places at once, one open request per track. Each became a window, and each window's open request counted as "waiting", so every window, the subtitle track's included, fetched up to 96 MB ahead over 8 connections. On an Apple TV that was 17–20 connections and 45–80 Mbps for a 5.5 Mbps movie, and the few bytes the player actually needed queued inside URLSession behind that read-ahead.
+- **Read-ahead now follows each window's real read speed:** how fast the reader's requests advance through it (not bytes handed out, which an open request takes regardless), `aheadSeconds` (25 s) of it, at least 2 MB. A subtitle window reads ahead a couple of megabytes; the video window as much as before.
+- **Connections are shared:** read-ahead uses at most `maxConnections` (8) across every stream. The fetch a request is waiting on may always start, at high task priority, so it is never queued behind read-ahead.
+- Up to 6 windows per file (was 3) so one per track never evicts another.
+- Benchmark (`RCMultiReaderLab`, new): three readers at video/audio/subtitle speeds, far apart, AV-style open requests, 60 Mbps shared link: bytes fetched dropped from 6.3× to 2× what was used and peak connections from 16 to 8. Single-stream benchmarks unchanged.
+
 ## [2.19.1] - 2026-11-09
 
 ### Fixed
