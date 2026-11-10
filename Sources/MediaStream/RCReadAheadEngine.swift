@@ -268,6 +268,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         /// Inclusive; nil = to end of file.
         let last: Int64?
         var infoPending: Bool
+        let createdAt = Date()
+        var answered = false
         init(sink: RCRangeSink, offset: Int64, last: Int64?) {
             self.sink = sink
             self.offset = offset
@@ -462,6 +464,14 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             if waiter.offset >= window.start, waiter.offset < limit {
                 let from = Int(waiter.offset - window.start)
                 let to = Int(limit - window.start)
+                if !waiter.answered {
+                    waiter.answered = true
+                    let waited = Date().timeIntervalSince(waiter.createdAt)
+                    if waited > 0.3 {
+                        log(String(format: "waited %.2fs for %lld (window %@..%@)", waited, waiter.offset,
+                                   Self.mb(window.start), Self.mb(window.end)))
+                    }
+                }
                 waiter.sink.respond(with: window.buffer.subdata(in: from..<to))
                 window.served += limit - waiter.offset
                 waiter.offset = limit

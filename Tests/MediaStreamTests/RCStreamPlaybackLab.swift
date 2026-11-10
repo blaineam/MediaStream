@@ -47,6 +47,33 @@ final class RCStreamPlaybackLab: XCTestCase {
         }
         let player = AVPlayer(playerItem: item)
         player.isMuted = true
+        // Subtitles on, as a viewer with them enabled (a legible track whose
+        // samples may lie far from the video's).
+        if ProcessInfo.processInfo.environment["STREAMLAB_SUBS"] != nil,
+           let group = try await asset.loadMediaSelectionGroup(for: .legible),
+           let option = group.options.first(where: { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }) {
+            item.select(option, in: group)
+        }
+        // Subtitle track switched off entirely (the host draws subtitles itself).
+        if ProcessInfo.processInfo.environment["STREAMLAB_NOSUBTRACK"] != nil {
+            try await waitUntil(timeout: 30) { item.status == .readyToPlay }
+            for track in item.tracks where [.subtitle, .text, .closedCaption].contains(track.assetTrack?.mediaType) {
+                track.isEnabled = false
+            }
+            if let group = try await asset.loadMediaSelectionGroup(for: .legible) {
+                let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+                print("STREAMLAB after disabling, selected subtitle option: \(selected?.displayName ?? "none")")
+                if let option = group.options.first { item.select(option, in: group) }
+                try await Task.sleep(nanoseconds: 500_000_000)
+                let enabled = item.tracks.filter { [.subtitle, .text].contains($0.assetTrack?.mediaType) && $0.isEnabled }.count
+                print("STREAMLAB after re-selecting: \(item.currentMediaSelection.selectedMediaOption(in: group)?.displayName ?? "none"), enabled subtitle tracks=\(enabled)")
+            }
+        }
+        // Resume partway in, like Continue Watching.
+        if let start = Double(ProcessInfo.processInfo.environment["STREAMLAB_START"] ?? "") {
+            await player.seek(to: CMTime(seconds: start, preferredTimescale: 600),
+                              toleranceBefore: .zero, toleranceAfter: .positiveInfinity)
+        }
 
         var stalls = 0
         let stallObserver = NotificationCenter.default.addObserver(
@@ -83,13 +110,19 @@ final class RCStreamPlaybackLab: XCTestCase {
             if Date().timeIntervalSince(playStart) > 15 { minBuffered = min(minBuffered, ahead) }
             if ProcessInfo.processInfo.environment["STREAMLAB_TRACE"] != nil,
                Int(Date().timeIntervalSince(playStart) * 10) % 20 == 0 {
-                print(String(format: "STREAMLAB t=%.0fs pos=%.1f buffered=%.1fs", Date().timeIntervalSince(playStart), now, ahead))
+                let net = RCStreamingResourceLoader.shared.stats(for: asset.url)
+                let ranges = item.loadedTimeRanges.map { r -> String in
+                    let tr = r.timeRangeValue
+                    return String(format: "%.1f-%.1f", tr.start.seconds, CMTimeRangeGetEnd(tr).seconds)
+                }.joined(separator: ",")
+                print(String(format: "STREAMLAB t=%.0fs pos=%.1f buffered=%.1fs conns=%d ranges=%@", Date().timeIntervalSince(playStart), now, ahead,
+                             net?.activeConnections ?? -1, ranges))
             }
         }
         let position = player.currentTime().seconds
 
         // Seek well ahead and time the resume.
-        let target = CMTime(seconds: min(position + 30, 80), preferredTimescale: 600)
+        let target = CMTime(seconds: position + 30, preferredTimescale: 600)
         let s0 = Date()
         await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         player.play()

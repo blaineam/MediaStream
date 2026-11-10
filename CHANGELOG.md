@@ -2,6 +2,13 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- The diagnostics log notes every request that waited more than 0.3 s for its first bytes, with where it was and what the window held.
+- `RCStreamPlaybackLab` can resume partway in (`STREAMLAB_START`), turn subtitles on (`STREAMLAB_SUBS`) or disable the subtitle track (`STREAMLAB_NOSUBTRACK`), and traces the player's loaded ranges. `RCSubtitleCursorLab` checks that a streamed asset's subtitle samples can be located by byte range. Together they showed that a subtitle track stored far from the video makes AVPlayer collapse its own buffer (the engine serving those reads instantly doesn't help), and that disabling the track avoids it.
+
 ## [2.23.0] - 2026-11-09
 
 ### Added
