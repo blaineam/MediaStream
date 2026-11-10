@@ -29,6 +29,7 @@ public enum RCStreamRouting {
     nonisolated(unsafe) private static var _reportFailure: (@Sendable (URL) -> Void)?
     nonisolated(unsafe) private static var _reportSuccess: (@Sendable (URL, TimeInterval) -> Void)?
     nonisolated(unsafe) private static var _failoverRequestTimeout: TimeInterval = 15
+    nonisolated(unsafe) private static var _connectionLimit: (@Sendable (URL) -> Int?)?
 
     /// Ordered equivalent URLs for a real (`https://`) loopback URL. The first
     /// is tried first. Returning an empty list is treated as `[url]`.
@@ -58,6 +59,17 @@ public enum RCStreamRouting {
     public static var failoverRequestTimeout: TimeInterval {
         get { lock.lock(); defer { lock.unlock() }; return _failoverRequestTimeout }
         set { lock.lock(); _failoverRequestTimeout = max(2, newValue); lock.unlock() }
+    }
+
+    /// The most connections worth opening at once to read one place in a
+    /// file at `url` (a candidate URL), or nil for the default. Cloud
+    /// backends answer each request slowly but serve many in parallel, so
+    /// parallel fetches help; a LAN file share (SFTP, SMB) answers fast and
+    /// pays for every extra connection with a new session or file handle on
+    /// the server, so a couple of long-lived reads beat many short ones.
+    public static var connectionLimit: (@Sendable (URL) -> Int?)? {
+        get { lock.lock(); defer { lock.unlock() }; return _connectionLimit }
+        set { lock.lock(); _connectionLimit = newValue; lock.unlock() }
     }
 
     /// Resolve the candidate list for `url`, always non-empty and always

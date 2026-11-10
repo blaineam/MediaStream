@@ -2,6 +2,12 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.21.0] - 2026-11-09
+
+### Added
+
+- **`RCStreamRouting.connectionLimit`**: an optional host hook giving the most connections worth opening at once to read one place in a file at a URL (per mirror candidate), or nil for the default. Parallel fetches suit cloud backends, which answer each request slowly; a LAN file share (SFTP, SMB) answers fast and pays for every extra connection with a new session or file handle on the server, so a couple of long reads beat many short ones. A window never runs more fetches than its current candidate's limit.
+
 ## [2.20.0] - 2026-11-09
 
 ### Fixed (constant rebuffering of a movie whose tracks lie apart)

@@ -217,6 +217,36 @@ final class RCReadAheadEngineTests: XCTestCase {
         XCTAssertGreaterThan(bounded.count, 1, "\(requests)")
     }
 
+    /// A host can hold a backend to fewer connections (a LAN file share).
+    func testConnectionLimitHookCapsParallelFetches() {
+        engine.invalidate()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeStubProtocol.self]
+        var tuning = RCReadAheadEngine.Tuning()
+        tuning.minChunk = 64 * 1024
+        tuning.maxChunk = 128 * 1024
+        tuning.minOpenEndedLead = 64 * 1024
+        tuning.maxOpenEndedLead = 64 * 1024
+        tuning.measureFor = 0.02
+        engine = RCReadAheadEngine(queue: queue, configuration: config, tuning: tuning)
+        RangeStubProtocol.reset(chunkDelay: 0.01)
+        RCStreamRouting.connectionLimit = { _ in 1 }
+        defer { RCStreamRouting.connectionLimit = nil }
+
+        let sink = FakeSink(wantsContentInfo: true)
+        let done = expectation(description: "whole file")
+        sink.onFinish = { done.fulfill() }
+        var peak = 0
+        let sampler = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [engine, url] _ in
+            peak = max(peak, engine?.stats(for: url)?.activeConnections ?? 0)
+        }
+        queue.async { self.engine.load(sink: sink, url: self.url, lower: 0, upper: nil, headers: [:]) }
+        wait(for: [done], timeout: 20)
+        sampler.invalidate()
+        XCTAssertEqual(sink.data, RangeStubProtocol.file)
+        XCTAssertLessThanOrEqual(peak, 1)
+    }
+
     func testStatsDescribeTheStream() {
         XCTAssertNil(engine.stats(for: url))
         let sink = FakeSink(wantsContentInfo: true)

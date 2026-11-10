@@ -196,6 +196,15 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             fetches.map { $0.openEnded ? $0.next : $0.stop }.max().map { max($0, end) } ?? end
         }
         var hasFallback: Bool { candidates.count > 1 }
+        /// Host's connection limit per candidate (see
+        /// `RCStreamRouting.connectionLimit`), looked up once each.
+        var limits: [Int: Int?] = [:]
+        var connectionLimit: Int? {
+            if let known = limits[candidateIndex] { return known }
+            let value = currentURL.flatMap { RCStreamRouting.connectionLimit?($0) }.map { max(1, $0) }
+            limits[candidateIndex] = value
+            return value
+        }
         var currentURL: URL? {
             candidates.indices.contains(candidateIndex) ? candidates[candidateIndex] : nil
         }
@@ -511,7 +520,8 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
             cap(open, at: open.next)
         }
 
-        let slots = hungry ? tuning.maxParallelFetches : tuning.parallelFetches
+        var slots = hungry ? tuning.maxParallelFetches : tuning.parallelFetches
+        if let cap = window.connectionLimit { slots = min(slots, cap) }
         while window.fetches.filter({ $0.task != nil }).count < slots {
             // Every stream shares the connections. Bytes a request waits on
             // (the fetch at the window's end) may always start; read-ahead
