@@ -25,6 +25,11 @@ final class RCStreamPlaybackLab: XCTestCase {
         }
         let seconds = Double(ProcessInfo.processInfo.environment["STREAMLAB_SECONDS"] ?? "30") ?? 30
         MediaStreamConfiguration.serverTrustEvaluator = { _, _ in true }
+        // A host's per-backend connection limit (2 = Enter Space on SFTP).
+        if let conns = Int(ProcessInfo.processInfo.environment["STREAMLAB_CONN"] ?? "") {
+            RCStreamRouting.connectionLimit = { _ in conns }
+        }
+        defer { RCStreamRouting.connectionLimit = nil }
 
         let result = try await MainActor.run { () -> Task<String, Error> in
             Task { @MainActor in try await Self.run(url: url, seconds: seconds) }
@@ -36,6 +41,10 @@ final class RCStreamPlaybackLab: XCTestCase {
     private static func run(url: URL, seconds: Double) async throws -> String {
         let asset = AVURLAsset.makeForRCStream(url: url)
         let item = AVPlayerItem(asset: asset)
+        // The host app's forward-buffer target (Enter Space's tvOS player sets 30).
+        if let fwd = Double(ProcessInfo.processInfo.environment["STREAMLAB_FWD"] ?? "") {
+            item.preferredForwardBufferDuration = fwd
+        }
         let player = AVPlayer(playerItem: item)
         player.isMuted = true
 
@@ -68,11 +77,13 @@ final class RCStreamPlaybackLab: XCTestCase {
             }
             wasPlaying = playing
             // Lowest buffer after the first 15 s (startup excluded).
-            if Date().timeIntervalSince(playStart) > 15 {
-                let now = player.currentTime().seconds
-                let ahead = item.loadedTimeRanges.map { CMTimeRangeGetEnd($0.timeRangeValue).seconds }
-                    .filter { $0 >= now }.max().map { $0 - now } ?? 0
-                minBuffered = min(minBuffered, ahead)
+            let now = player.currentTime().seconds
+            let ahead = item.loadedTimeRanges.map { CMTimeRangeGetEnd($0.timeRangeValue).seconds }
+                .filter { $0 >= now }.max().map { $0 - now } ?? 0
+            if Date().timeIntervalSince(playStart) > 15 { minBuffered = min(minBuffered, ahead) }
+            if ProcessInfo.processInfo.environment["STREAMLAB_TRACE"] != nil,
+               Int(Date().timeIntervalSince(playStart) * 10) % 20 == 0 {
+                print(String(format: "STREAMLAB t=%.0fs pos=%.1f buffered=%.1fs", Date().timeIntervalSince(playStart), now, ahead))
             }
         }
         let position = player.currentTime().seconds

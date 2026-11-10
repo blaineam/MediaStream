@@ -2,6 +2,12 @@
 
 All notable changes to MediaStream are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.23.0] - 2026-11-09
+
+### Added
+
+- **`RCStreamDiagnostics.handler`**: set it to receive the streaming engine's event log (every request, window, fetch start and finish with time-to-first-byte and duration), e.g. to write a diagnostics file while a "stream info" switch is on. Nil by default: nothing is logged and nothing is formatted.
+
 ## [2.22.0] - 2026-11-09
 
 ### Fixed (buffer dips during playback)

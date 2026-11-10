@@ -69,6 +69,18 @@ public struct RCStreamStats: Sendable, Equatable {
     }
 }
 
+/// Where the streaming engine's event log goes when a host wants it (a
+/// "stream diagnostics" switch): every request, window, fetch start and end
+/// with timing. Nil (the default) logs nothing. Called on the engine's queue.
+public enum RCStreamDiagnostics {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _handler: (@Sendable (String) -> Void)?
+    public static var handler: (@Sendable (String) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _handler }
+        set { lock.lock(); _handler = newValue; lock.unlock() }
+    }
+}
+
 protocol RCRangeSink: AnyObject {
     /// AV wants the content type and length filled before any data.
     var wantsContentInfo: Bool { get }
@@ -276,7 +288,11 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
     /// MEDIASTREAM_RC_DEBUG=1 logs every request, window and connection.
     private static let debug = ProcessInfo.processInfo.environment["MEDIASTREAM_RC_DEBUG"] != nil
     private func log(_ message: @autoclosure () -> String) {
-        if Self.debug { print(String(format: "[RCReadAhead %.2f] ", Date().timeIntervalSince(Self.debugEpoch)) + message()) }
+        let handler = RCStreamDiagnostics.handler
+        guard Self.debug || handler != nil else { return }
+        let line = String(format: "[RCReadAhead %.2f] ", Date().timeIntervalSince(Self.debugEpoch)) + message()
+        if Self.debug { print(line) }
+        handler?(line)
     }
     private static let debugEpoch = Date()
     private static func mb(_ bytes: Int64) -> String { String(format: "%.1fMB", Double(bytes) / 1_048_576) }
@@ -805,6 +821,10 @@ final class RCReadAheadEngine: NSObject, @unchecked Sendable {
         let cancelled = (error as? URLError)?.code == .cancelled
         if cancelled && !fetch.rejected && fetch.stop > fetch.next { return }
         let complete = fetch.next >= fetch.stop
+        log(String(format: "done %lld-%lld %@ in %.2fs ttfb=%.2fs%@", fetch.offset, fetch.stop - 1,
+                   Self.mb(Int64(fetch.bytesSinceFirst)), Date().timeIntervalSince(fetch.startedAt),
+                   fetch.firstByteAt.map { $0.timeIntervalSince(fetch.startedAt) } ?? -1,
+                   error.map { " error=\(($0 as NSError).code)" } ?? ""))
         if !fetch.rejected && (error == nil || complete) {
             if !complete {
                 // The server ended early: that is the end of the file.
