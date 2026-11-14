@@ -93,6 +93,37 @@ public enum VideoPlayerRouter {
 
 /// Helper for extracting video metadata
 /// Uses AVFoundation first, then falls back to WebView-based HTML5 video for WebM and other formats
+/// Dedupes AVFoundation probes of the same remote video. Each `AVURLAsset`
+/// opens its own connection and range-reads the (multi-MB) `moov` atom, then
+/// cancels, so thumbnail + duration for one video used to cost 4–7 canceled
+/// multi-MB GETs. Durations learned by either path are shared, and concurrent
+/// duration requests for one URL join a single probe.
+actor VideoProbeCoordinator {
+    static let shared = VideoProbeCoordinator()
+    private var durations: [String: TimeInterval] = [:]
+    private var inflight: [String: Task<TimeInterval?, Never>] = [:]
+
+    func cachedDuration(for url: URL) -> TimeInterval? { durations[url.absoluteString] }
+
+    func record(duration: TimeInterval, for url: URL) {
+        guard duration.isFinite, duration > 0 else { return }
+        if durations.count > 20_000 { durations.removeAll(keepingCapacity: true) }
+        durations[url.absoluteString] = duration
+    }
+
+    func duration(for url: URL, probe: @escaping @Sendable () async -> TimeInterval?) async -> TimeInterval? {
+        let key = url.absoluteString
+        if let d = durations[key] { return d }
+        if let t = inflight[key] { return await t.value }
+        let t = Task { await probe() }
+        inflight[key] = t
+        let result = await t.value
+        inflight[key] = nil
+        if let result { record(duration: result, for: url) }
+        return result
+    }
+}
+
 public enum VideoMetadata {
 
     // MARK: - Video Duration
@@ -117,6 +148,12 @@ public enum VideoMetadata {
     ///   - headers: Optional HTTP headers for authenticated requests (AVFoundation only)
     /// - Returns: Duration in seconds, or nil if unable to determine
     public static func getVideoDuration(from url: URL, headers: [String: String]?) async -> TimeInterval? {
+        await VideoProbeCoordinator.shared.duration(for: url) {
+            await probeVideoDuration(from: url, headers: headers)
+        }
+    }
+
+    private static func probeVideoDuration(from url: URL, headers: [String: String]?) async -> TimeInterval? {
         // Try AVFoundation first (more reliable for supported formats)
         let asset: AVURLAsset
         if let headers = headers, !headers.isEmpty {

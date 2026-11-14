@@ -832,6 +832,12 @@ extension ThumbnailCache {
         do {
             let cgImage = try await imageGenerator.image(at: time).image
 
+            // Same asset already has the moov loaded: grab duration now so the
+            // separate duration probe doesn't re-fetch it over the network.
+            if let d = try? await asset.load(.duration) {
+                await VideoProbeCoordinator.shared.record(duration: CMTimeGetSeconds(d), for: videoURL)
+            }
+
             #if canImport(UIKit)
             let fullImage = UIImage(cgImage: cgImage)
             #elseif canImport(AppKit)

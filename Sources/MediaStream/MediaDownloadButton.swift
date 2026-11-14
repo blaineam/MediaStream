@@ -35,13 +35,17 @@ public struct MediaDownloadButton: View {
             return .downloading
         default:
             // Check actual cache status
-            if downloadManager.allCached(mediaItems) {
-                return .cached
-            } else if downloadManager.anyCached(mediaItems) {
-                return .partiallyCached
-            } else {
-                return .notCached
+            // Single pass with early exit; this runs on every body evaluation
+            // and each isCached hits diskCacheKey + a stat per item.
+            var cached = 0, total = 0
+            for item in mediaItems where downloadManager.canCache(item) {
+                total += 1
+                if downloadManager.isCached(mediaItem: item) { cached += 1 }
             }
+            if total > 0, cached == total { return .cached }
+            if cached > 0 { return .partiallyCached }
+            // Items that aren't cacheable still count for "any cached" in the old logic
+            return downloadManager.anyCached(mediaItems) ? .partiallyCached : .notCached
         }
     }
 

@@ -4,6 +4,11 @@ All notable changes to MediaStream are documented here. This project adheres to 
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a gallery of hundreds of large remote videos no longer re-fetches each video's `moov` atom several times. Thumbnail and duration probes share one learned duration per URL and concurrent duration requests join a single probe, instead of each opening its own `AVURLAsset` and cancelling after multi-MB reads.
+- `MediaDownloadButton` computes its cache state in one pass instead of two full scans (each item hit `diskCacheKey` and a file stat) on every render, which stalled the main thread in large galleries.
+
 ### Added
 
 - The diagnostics log notes every request that waited more than 0.3 s for its first bytes, with where it was and what the window held.
