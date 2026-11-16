@@ -68,6 +68,33 @@ struct DirectStreamingTests {
         #expect(box.calls.allSatisfy { $0.1 <= 2 * 1024 * 1024 })
     }
 
+
+    @Test("estimator sizes chunks to the link: fast gets big reads, a slow shared uplink gets small ones")
+    func estimatorSizesChunks() {
+        let e = StreamThroughputEstimator()
+        #expect(e.chunkLength(remaining: 10_000_000) == StreamThroughputEstimator.firstChunk)
+        for _ in 0..<10 { e.record(bytes: 2_000_000, seconds: 0.5) }          // ~4 MB/s
+        #expect(e.chunkLength(remaining: 10_000_000) == StreamThroughputEstimator.maxChunk)
+        let slow = StreamThroughputEstimator()
+        for _ in 0..<10 { slow.record(bytes: 100_000, seconds: 1) }           // ~100 KB/s
+        let chunk = slow.chunkLength(remaining: 10_000_000)
+        #expect(chunk >= StreamThroughputEstimator.minChunk && chunk <= 400_000)
+        slow.recordFailure()
+        #expect(slow.chunkLength(remaining: 10_000_000) < chunk)
+        #expect(slow.chunkLength(remaining: 1_000) == 1_000)                   // never past what remains
+    }
+
+    @Test("stream with an estimator still delivers every byte in order")
+    func estimatedStreamDelivers() async throws {
+        let file = Data((0..<1_500_000).map { UInt8($0 % 241) })
+        let box = Box(); let e = StreamThroughputEstimator()
+        try await DirectStreamingPlanner.stream(
+            start: 100, end: 1_400_000, estimator: e,
+            reader: { off, len in file.subdata(in: Int(off)..<Int(min(off + len, Int64(file.count)))) },
+            isCancelled: { false }, deliver: { box.out.append($0) })
+        #expect(box.out == file.subdata(in: 100..<1_400_000))
+    }
+
     @Test("stream stops on cancel and on EOF short read")
     func streamStops() async throws {
         let box = Box()
@@ -147,6 +174,36 @@ struct DirectStreamingHookTests {
             #expect(tracks.count == 1)
             #expect(log.items.contains { $0.hasPrefix("size My Remote:Music/tone.wav") })
             #expect(log.items.contains { $0.hasPrefix("read ") })
+        }
+
+        @Test("AVFoundation keeps asking when open-ended requests are completed early (download follows playback)")
+        func windowedOpenEndedRequestsStillPlayThrough() async throws {
+            let file = Self.wav(seconds: 4)            // 64,000 bytes of PCM
+            let reads = Box2()
+            MediaStreamConfiguration.directSizeProvider = { _, _ in Int64(file.count) }
+            MediaStreamConfiguration.directRangeReader = { _, _, off, len in
+                reads.add("\(off)+\(len)")
+                return file.subdata(in: Int(off)..<Int(min(off + len, Int64(file.count))))
+            }
+            let previous = DirectStreamingResourceLoader.maxBytesPerOpenEndedRequest
+            DirectStreamingResourceLoader.maxBytesPerOpenEndedRequest = 16 * 1024   // far smaller than the file
+            defer {
+                DirectStreamingResourceLoader.maxBytesPerOpenEndedRequest = previous
+                MediaStreamConfiguration.directRangeReader = nil; MediaStreamConfiguration.directSizeProvider = nil
+            }
+            let url = try #require(DirectStreamingURL.make(remote: "R", path: "tone.wav"))
+            let asset = AVURLAsset.makeForRCStream(url: url)
+            let track = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false])
+            reader.add(output)
+            #expect(reader.startReading())
+            var bytes = 0
+            while let sample = output.copyNextSampleBuffer() { bytes += CMSampleBufferGetTotalSampleSize(sample) }
+            #expect(bytes >= 60_000, "decoded \(bytes) of ~64000 PCM bytes; reads: \(reads.items.count)")
+            #expect(reader.status == .completed)
         }
 
         @Test("missing file fails the asset instead of hanging")

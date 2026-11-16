@@ -52,6 +52,42 @@ public enum DirectStreamingURL {
     }
 }
 
+/// Measured read speed, shared by every request of the loader, used to size the next chunk so a chunk
+/// takes about `targetSeconds` whatever the link: a fast LAN gets 2 MB reads, a 10 Mbps upstream shared
+/// with a whole office gets ~100 KB reads that finish well inside a timeout instead of being retried.
+public final class StreamThroughputEstimator: @unchecked Sendable {
+    public static let targetSeconds: Double = 3
+    public static let minChunk: Int64 = 64 * 1024
+    public static let maxChunk: Int64 = 2 * 1024 * 1024
+    public static let firstChunk: Int64 = 128 * 1024
+
+    private let lock = NSLock()
+    private var bytesPerSecond: Double?
+
+    public init() {}
+
+    public func record(bytes: Int, seconds: Double) {
+        guard bytes >= 16 * 1024, seconds > 0 else { return }
+        let sample = Double(bytes) / seconds
+        lock.withLock { bytesPerSecond = bytesPerSecond.map { 0.6 * $0 + 0.4 * sample } ?? sample }
+    }
+
+    /// A failure means the link is worse than it looked: halve the estimate.
+    public func recordFailure() {
+        lock.withLock { bytesPerSecond = bytesPerSecond.map { $0 * 0.5 } }
+    }
+
+    public var estimate: Double? { lock.withLock { bytesPerSecond } }
+
+    public func chunkLength(remaining: Int64) -> Int64 {
+        let wanted: Int64 = lock.withLock {
+            guard let bps = bytesPerSecond else { return Self.firstChunk }
+            return Int64(bps * Self.targetSeconds)
+        }
+        return min(remaining, max(Self.minChunk, min(Self.maxChunk, wanted)))
+    }
+}
+
 /// Pure, AV-free helpers so the interesting logic is unit-testable.
 enum DirectStreamingPlanner {
     /// Chunk sizes grow so playback starts fast (small first read) but a long
@@ -99,6 +135,7 @@ enum DirectStreamingPlanner {
     /// A short read before `end` means EOF/shrunk file: the stream stops
     /// rather than spinning.
     static func stream(start: Int64, end: Int64,
+                       estimator: StreamThroughputEstimator? = nil,
                        reader: (Int64, Int64) async throws -> Data,
                        isCancelled: () -> Bool,
                        deliver: (Data) -> Void) async throws {
@@ -106,8 +143,17 @@ enum DirectStreamingPlanner {
         var index = 0
         while offset < end {
             if isCancelled() || Task.isCancelled { return }
-            let want = chunkLength(index: index, remaining: end - offset)
-            let data = try await reader(offset, want)
+            let remaining = end - offset
+            let want = estimator?.chunkLength(remaining: remaining) ?? chunkLength(index: index, remaining: remaining)
+            let began = Date()
+            let data: Data
+            do {
+                data = try await reader(offset, want)
+            } catch {
+                estimator?.recordFailure()
+                throw error
+            }
+            estimator?.record(bytes: data.count, seconds: Date().timeIntervalSince(began))
             if isCancelled() || Task.isCancelled { return }
             if data.isEmpty { return }
             deliver(data)
@@ -121,6 +167,14 @@ public final class DirectStreamingResourceLoader: NSObject, @unchecked Sendable 
     public static let shared = DirectStreamingResourceLoader()
     public let queue = DispatchQueue(label: "com.mediastream.directLoader", qos: .userInitiated)
 
+    /// How far one OPEN-ENDED request ("from here to the end of the file") reads before it is completed.
+    /// AVFoundation asks for the whole rest of the file and then plays it at its own pace; answering all of
+    /// it at once pulled entire files over whatever the link was — on a 10 Mbps upstream shared with an
+    /// office that starved everyone. Completing the request early is fine: AVPlayer asks again from where it
+    /// stopped, when its buffer needs more, so the download follows playback instead of racing ahead of it.
+    public static var maxBytesPerOpenEndedRequest: Int64 = 3 * 1024 * 1024
+
+    private let throughput = StreamThroughputEstimator()
     private let lock = NSLock()
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var cancelled = Set<ObjectIdentifier>()
@@ -189,8 +243,11 @@ extension DirectStreamingResourceLoader: AVAssetResourceLoaderDelegate {
                     if let w = DirectStreamingPlanner.window(
                         requestedOffset: start, requestedLength: remainingLength,
                         toEnd: data.requestsAllDataToEndOfResource, size: size) {
+                        let end = data.requestsAllDataToEndOfResource
+                            ? min(w.end, w.start + Self.maxBytesPerOpenEndedRequest) : w.end
                         try await DirectStreamingPlanner.stream(
-                            start: w.start, end: w.end,
+                            start: w.start, end: end,
+                            estimator: self.throughput,
                             reader: { off, len in try await reader(remote, path, off, len) },
                             isCancelled: { self.isCancelled(id) },
                             deliver: { data.respond(with: $0) })
