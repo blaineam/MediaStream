@@ -181,6 +181,13 @@ public extension AVURLAsset {
     /// rewritten to the sentinel and the resource loader delegate is
     /// attached. Otherwise we return a plain `AVURLAsset(url:options:)`.
     static func makeForRCStream(url: URL, options: [String: Any]? = nil) -> AVURLAsset {
+        if url.scheme == DirectStreamingScheme {
+            // In-process route: no HTTP, no localhost server (survives backgrounding).
+            let asset = AVURLAsset(url: url, options: options)
+            asset.resourceLoader.setDelegate(DirectStreamingResourceLoader.shared,
+                                             queue: DirectStreamingResourceLoader.shared.queue)
+            return asset
+        }
         if RCStreamingResourceLoader.shouldIntercept(url: url),
            let sentinel = RCStreamingResourceLoader.sentinelURL(for: url) {
             let asset = AVURLAsset(url: sentinel, options: options)

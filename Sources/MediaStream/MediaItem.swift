@@ -142,6 +142,30 @@ public enum MediaStreamConfiguration {
     /// Closure type for providing HTTP headers for a given URL
     public typealias HeaderProvider = @Sendable (URL) -> [String: String]?
 
+    /// Reads `length` bytes at `offset` of `path` on `remote` (host-implemented;
+    /// Enter Space backs it with an in-process librclone ranged read). A short
+    /// result means EOF. See `DirectStreamingResourceLoader`.
+    public typealias DirectRangeReader = @Sendable (_ remote: String, _ path: String, _ offset: Int64, _ length: Int64) async throws -> Data
+
+    /// Returns a file's size in bytes, or nil if it does not exist.
+    public typealias DirectSizeProvider = @Sendable (_ remote: String, _ path: String) async throws -> Int64?
+
+    private static let directLock = NSLock()
+    nonisolated(unsafe) private static var _directReader: DirectRangeReader?
+    nonisolated(unsafe) private static var _directSize: DirectSizeProvider?
+
+    /// Host hook for `espace-direct://` URLs. Thread-safe; read off the main actor by the loader.
+    public static var directRangeReader: DirectRangeReader? {
+        get { directLock.lock(); defer { directLock.unlock() }; return _directReader }
+        set { directLock.lock(); _directReader = newValue; directLock.unlock() }
+    }
+
+    /// Host hook for the size of an `espace-direct://` file.
+    public static var directSizeProvider: DirectSizeProvider? {
+        get { directLock.lock(); defer { directLock.unlock() }; return _directSize }
+        set { directLock.lock(); _directSize = newValue; directLock.unlock() }
+    }
+
     /// Closure type for providing Basic Auth credentials for a given URL
     public typealias CredentialProvider = @Sendable (URL) -> (username: String, password: String)?
 
