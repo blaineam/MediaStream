@@ -74,7 +74,8 @@ enum DirectStreamingPlanner {
             guard let size else { return nil }
             end = size
         } else {
-            end = start + Int64(requestedLength)
+            let (sum, overflow) = start.addingReportingOverflow(Int64(requestedLength))
+            end = overflow ? Int64.max : sum
             if let size { end = min(end, size) }
         }
         return end > start ? (start, end) : nil
@@ -177,8 +178,16 @@ extension DirectStreamingResourceLoader: AVAssetResourceLoaderDelegate {
                 }
                 if let data = loadingRequest.dataRequest {
                     let start = data.currentOffset > 0 ? data.currentOffset : data.requestedOffset
+                    // A to-end request reports an enormous `requestedLength`; adding it to the offset
+                    // overflowed (a trap) for any request that does not start at 0 — i.e. every seek.
+                    let remainingLength: Int = {
+                        if data.requestsAllDataToEndOfResource { return 0 }
+                        let (end, overflow) = data.requestedOffset.addingReportingOverflow(Int64(data.requestedLength))
+                        let length = overflow ? Int64(Int.max) : end - start
+                        return Int(clamping: max(0, length))
+                    }()
                     if let w = DirectStreamingPlanner.window(
-                        requestedOffset: start, requestedLength: Int(data.requestedOffset + Int64(data.requestedLength) - start),
+                        requestedOffset: start, requestedLength: remainingLength,
                         toEnd: data.requestsAllDataToEndOfResource, size: size) {
                         try await DirectStreamingPlanner.stream(
                             start: w.start, end: w.end,

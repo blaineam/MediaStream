@@ -169,6 +169,11 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
     /// The currently loaded media item in the shared audio player
     @Published public private(set) var currentAudioMediaItem: (any MediaItem)?
+    /// Bumped by every audio load; a load that finds it has moved on (the user skipped again, or the
+    /// gallery asked for the same track) stops instead of replacing the player item — two loads of one
+    /// track made it restart from the beginning, and an older load finishing late replaced a newer track.
+    private var audioLoadGeneration = 0
+    private var loadingAudioItem: (any MediaItem)?
 
     /// Whether we're using the shared audio player (vs external/video players)
     @Published public private(set) var isUsingSharedAudioPlayer: Bool = false
@@ -659,7 +664,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             // A track whose load failed while the app was away (network stalled, a range read
             // timed out) stays "loaded" as far as the playlist knows, so selecting it did nothing
             // and every later track queued behind it. Reload it now that the app is back.
-            if let item = currentAudioMediaItem, let current = sharedAudioPlayer?.currentItem, current.status == .failed {
+            if let item = currentAudioMediaItem, let current = sharedAudioPlayer?.currentItem, current.status != .readyToPlay {
                 print("[MediaPlaybackService] Current audio item failed while away (\(current.error?.localizedDescription ?? "unknown")) — reloading")
                 let resumeAt = currentTime
                 currentAudioMediaItem = nil
@@ -1472,7 +1477,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
     ///   - mediaItem: The media item to play
     ///   - autoplay: Whether to start playing immediately
     ///   - seekToPosition: If provided, seeks to this position after loading (for restoration)
-    public func loadAudioInSharedPlayer(mediaItem: any MediaItem, autoplay: Bool = true, seekToPosition: TimeInterval? = nil) async {
+    public func loadAudioInSharedPlayer(mediaItem: any MediaItem, autoplay: Bool = true, seekToPosition: TimeInterval? = nil, attempt: Int = 0) async {
         // Check if this item is already loaded in the shared player
         // Use content-based comparison (diskCacheKey/sourceURL) instead of UUID
         // because gallery recreation creates new media items with new UUIDs for the same file
@@ -1503,6 +1508,17 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             return
         }
 
+        // The same track is already being loaded by another caller (the playlist and the gallery
+        // both ask when a track changes): let that one finish rather than restarting it.
+        if let loading = loadingAudioItem, isSameMediaContent(loading, mediaItem) {
+            print("[MediaPlaybackService] ⏳ Audio load already in progress for this track — not starting a second")
+            return
+        }
+        audioLoadGeneration += 1
+        let generation = audioLoadGeneration
+        loadingAudioItem = mediaItem
+        defer { if generation == audioLoadGeneration { loadingAudioItem = nil } }
+
         // Get URL - prefer cached (when background enabled), fall back to source
         // When encryptDownloads is true, skip cached files (they're encrypted and can't be played directly)
         var audioURL: URL?
@@ -1530,6 +1546,12 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         // Get auth headers before MainActor.run (async operation)
         let headers = await MediaStreamConfiguration.headersAsync(for: url)
+
+        // Latest request wins: a newer load (the user skipped again) owns the player now.
+        guard generation == audioLoadGeneration else {
+            print("[MediaPlaybackService] Audio load superseded before the player item was created — dropping")
+            return
+        }
 
         await MainActor.run {
             #if canImport(UIKit)
@@ -1572,6 +1594,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
             }
 
             print("[MediaPlaybackService] Loaded audio in shared player: \(url.lastPathComponent)")
+            watchAudioItemBecomesReady(newItem, for: mediaItem, autoplay: autoplay, attempt: attempt)
         }
 
         // Seek to position if requested (for restoration) - must be outside MainActor.run for async seek
@@ -1584,6 +1607,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         // Load and update metadata
         let metadata = await mediaItem.getAudioMetadata()
+        guard generation == audioLoadGeneration else { return }   // skipped again while this loaded
 
         var title = metadata?.title
         if title == nil || title?.isEmpty == true {
@@ -1630,6 +1654,30 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                 duration: mediaDuration,
                 isVideo: false
             )
+        }
+    }
+
+    /// A remote item that never becomes ready (a stalled range read, a dead connection) leaves the
+    /// player spinning forever and every later skip queued behind it. Give it a generous window, then
+    /// rebuild the player item — at most twice — instead of waiting indefinitely.
+    private func watchAudioItemBecomesReady(_ item: AVPlayerItem, for mediaItem: any MediaItem, autoplay: Bool, attempt: Int) {
+        guard attempt < 2 else { return }
+        Task { @MainActor [weak self] in
+            let deadline = Date().addingTimeInterval(25)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self else { return }
+                // Replaced by another track, or already fine: nothing to do.
+                guard self.sharedAudioPlayer?.currentItem === item else { return }
+                if item.status == .readyToPlay { return }
+                if item.status == .failed { break }
+            }
+            guard let self, self.sharedAudioPlayer?.currentItem === item, item.status != .readyToPlay else { return }
+            print("[MediaPlaybackService] Audio item not ready after 25s (status \(item.status.rawValue), \(item.error?.localizedDescription ?? "no error")) — reloading (attempt \(attempt + 1))")
+            let resumeAt = self.currentTime
+            self.currentAudioMediaItem = nil
+            await self.loadAudioInSharedPlayer(mediaItem: mediaItem, autoplay: autoplay,
+                                               seekToPosition: resumeAt > 1 ? resumeAt : nil, attempt: attempt + 1)
         }
     }
 

@@ -28,6 +28,9 @@ struct DirectStreamingTests {
         #expect(DirectStreamingPlanner.window(requestedOffset: 10, requestedLength: 0, toEnd: true, size: 1000)?.end == 1000)
         #expect(DirectStreamingPlanner.window(requestedOffset: 1000, requestedLength: 5, toEnd: false, size: 1000) == nil)
         #expect(DirectStreamingPlanner.window(requestedOffset: 0, requestedLength: 0, toEnd: true, size: nil) == nil)
+        // A request with an enormous length at an offset must not overflow (seeking in a to-end request).
+        let huge = DirectStreamingPlanner.window(requestedOffset: 5_000, requestedLength: Int.max, toEnd: false, size: 1_000_000)
+        #expect(huge?.start == 5_000 && huge?.end == 1_000_000)
     }
 
     @Test("chunks grow and cap")
