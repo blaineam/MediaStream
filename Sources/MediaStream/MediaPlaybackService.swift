@@ -656,6 +656,15 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                 // Notify that we should restore the main view
                 onRestoreFromPiP?()
             }
+            // A track whose load failed while the app was away (network stalled, a range read
+            // timed out) stays "loaded" as far as the playlist knows, so selecting it did nothing
+            // and every later track queued behind it. Reload it now that the app is back.
+            if let item = currentAudioMediaItem, let current = sharedAudioPlayer?.currentItem, current.status == .failed {
+                print("[MediaPlaybackService] Current audio item failed while away (\(current.error?.localizedDescription ?? "unknown")) — reloading")
+                let resumeAt = currentTime
+                currentAudioMediaItem = nil
+                await loadAudioInSharedPlayer(mediaItem: item, autoplay: false, seekToPosition: resumeAt > 0 ? resumeAt : nil)
+            }
             print("[MediaPlaybackService] App entering foreground")
         }
     }
@@ -1467,7 +1476,10 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         // Check if this item is already loaded in the shared player
         // Use content-based comparison (diskCacheKey/sourceURL) instead of UUID
         // because gallery recreation creates new media items with new UUIDs for the same file
-        if let currentItem = currentAudioMediaItem, isSameMediaContent(currentItem, mediaItem) {
+        // …but never treat a FAILED player item as "already loaded": that made a failed track
+        // impossible to retry, and the playlist moved on while nothing played.
+        let sharedItemFailed = sharedAudioPlayer?.currentItem?.status == .failed
+        if !sharedItemFailed, let currentItem = currentAudioMediaItem, isSameMediaContent(currentItem, mediaItem) {
             print("[MediaPlaybackService] ♻️ Audio already in shared player (same content), skipping reload")
 
             // Ensure external playback mode is enabled for remote commands
