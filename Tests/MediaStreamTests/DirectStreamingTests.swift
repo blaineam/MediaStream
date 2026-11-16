@@ -89,13 +89,21 @@ struct DirectStreamingTests {
                                                     isCancelled: { false }, deliver: { _ in })
         }
     }
+}
 
-    @Test("config hooks are settable")
-    func hooks() async throws {
-        MediaStreamConfiguration.directRangeReader = { _, _, _, _ in Data([1, 2]) }
-        let d = try await MediaStreamConfiguration.directRangeReader?("r", "p", 0, 2)
-        #expect(d == Data([1, 2]))
-        MediaStreamConfiguration.directRangeReader = nil
-        #expect(MediaStreamConfiguration.directRangeReader == nil)
+@Suite("Direct streaming download", .serialized)
+struct DirectStreamingDownloadTests {
+    @Test("downloadDirect pulls the whole file through the reader")
+    func downloadWholeFile() async throws {
+        let file = Data((0..<5_000_000).map { UInt8($0 % 239) })
+        MediaStreamConfiguration.directSizeProvider = { _, _ in Int64(file.count) }
+        MediaStreamConfiguration.directRangeReader = { _, _, off, len in
+            file.subdata(in: Int(off)..<Int(min(off + len, Int64(file.count))))
+        }
+        defer { MediaStreamConfiguration.directRangeReader = nil; MediaStreamConfiguration.directSizeProvider = nil }
+        let url = try #require(DirectStreamingURL.make(remote: "R", path: "m/a.mp3"))
+        let temp = try await MediaDownloadManager.downloadDirect(url) { _, _ in }
+        defer { try? FileManager.default.removeItem(at: temp) }
+        #expect(try Data(contentsOf: temp) == file)
     }
 }

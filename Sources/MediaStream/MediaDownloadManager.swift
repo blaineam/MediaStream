@@ -571,6 +571,11 @@ public final class MediaDownloadManager: ObservableObject {
             return
         }
 
+        let tempURL: URL
+        if sourceURL.scheme == DirectStreamingScheme {
+            // In-process source: pull it down in ranged chunks (no HTTP involved).
+            tempURL = try await Self.downloadDirect(sourceURL, progressUpdate: progressUpdate)
+        } else {
         // Get headers for authenticated requests
         let headers = await headerProvider(sourceURL)
 
@@ -582,13 +587,15 @@ public final class MediaDownloadManager: ObservableObject {
         }
 
         // Download with progress tracking
-        let (tempURL, response) = try await urlSession.download(for: request)
+        let (downloaded, response) = try await urlSession.download(for: request)
+        tempURL = downloaded
 
         // Check response
         if let httpResponse = response as? HTTPURLResponse {
             guard (200...299).contains(httpResponse.statusCode) else {
                 throw DownloadError.httpError(httpResponse.statusCode)
             }
+        }
         }
 
         // Encrypt if needed, then move to final destination
@@ -613,6 +620,34 @@ public final class MediaDownloadManager: ObservableObject {
             print("[MediaDownloadManager] Downloaded: \(destinationURL.lastPathComponent)")
             #endif
         }
+    }
+
+    /// Pulls an `espace-direct://` file to a temp file through the host's range reader.
+    static func downloadDirect(_ url: URL, progressUpdate: (Int64, Int64) -> Void) async throws -> URL {
+        guard let (remote, path) = DirectStreamingURL.parse(url),
+              let reader = MediaStreamConfiguration.directRangeReader else {
+            throw DownloadError.invalidDestination
+        }
+        let total = try await MediaStreamConfiguration.directSizeProvider?(remote, path) ?? 0
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        FileManager.default.createFile(atPath: temp.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: temp)
+        defer { try? handle.close() }
+        do {
+            var offset: Int64 = 0
+            while total == 0 || offset < total {
+                try Task.checkCancellation()
+                let data = try await reader(remote, path, offset, 2 * 1024 * 1024)
+                if data.isEmpty { break }
+                try handle.write(contentsOf: data)
+                offset += Int64(data.count)
+                progressUpdate(offset, total)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            throw error
+        }
+        return temp
     }
 
     /// Get file extension for a media item
