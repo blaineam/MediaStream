@@ -842,7 +842,9 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
     /// Play the current media
     public func play() {
         #if canImport(UIKit)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Re-assert the .playback category, not just activate: a background teardown elsewhere may
+        // have left the session on .ambient, which never plays (or keeps playing) in the background.
+        configureAudioSession()
         #endif
 
         // In external playback mode, control players directly for faster response
@@ -1519,7 +1521,9 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         await MainActor.run {
             #if canImport(UIKit)
-            try? AVAudioSession.sharedInstance().setActive(true)
+            // Re-assert the .playback category, not just activate: a background teardown elsewhere may
+            // have left the session on .ambient, which never plays (or keeps playing) in the background.
+            configureAudioSession()
             #endif
 
             // Create shared player if needed
