@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import MediaStream
+import AVFoundation
 
 @Suite("Direct streaming")
 struct DirectStreamingTests {
@@ -91,19 +92,75 @@ struct DirectStreamingTests {
     }
 }
 
-@Suite("Direct streaming download", .serialized)
-struct DirectStreamingDownloadTests {
-    @Test("downloadDirect pulls the whole file through the reader")
-    func downloadWholeFile() async throws {
-        let file = Data((0..<5_000_000).map { UInt8($0 % 239) })
-        MediaStreamConfiguration.directSizeProvider = { _, _ in Int64(file.count) }
-        MediaStreamConfiguration.directRangeReader = { _, _, off, len in
-            file.subdata(in: Int(off)..<Int(min(off + len, Int64(file.count))))
+// Both suites mutate the global range-reader hooks, so they run serialized under one parent.
+@Suite("Direct streaming hooks", .serialized)
+struct DirectStreamingHookTests {
+    @Suite("Download")
+    struct DirectStreamingDownloadTests {
+        @Test("downloadDirect pulls the whole file through the reader")
+        func downloadWholeFile() async throws {
+            let file = Data((0..<5_000_000).map { UInt8($0 % 239) })
+            MediaStreamConfiguration.directSizeProvider = { _, _ in Int64(file.count) }
+            MediaStreamConfiguration.directRangeReader = { _, _, off, len in
+                file.subdata(in: Int(off)..<Int(min(off + len, Int64(file.count))))
+            }
+            defer { MediaStreamConfiguration.directRangeReader = nil; MediaStreamConfiguration.directSizeProvider = nil }
+            let url = try #require(DirectStreamingURL.make(remote: "R", path: "m/a.mp3"))
+            let temp = try await MediaDownloadManager.downloadDirect(url) { _, _ in }
+            defer { try? FileManager.default.removeItem(at: temp) }
+            #expect(try Data(contentsOf: temp) == file)
         }
-        defer { MediaStreamConfiguration.directRangeReader = nil; MediaStreamConfiguration.directSizeProvider = nil }
-        let url = try #require(DirectStreamingURL.make(remote: "R", path: "m/a.mp3"))
-        let temp = try await MediaDownloadManager.downloadDirect(url) { _, _ in }
-        defer { try? FileManager.default.removeItem(at: temp) }
-        #expect(try Data(contentsOf: temp) == file)
     }
+
+    @Suite("AVFoundation")
+    struct DirectStreamingAVTests {
+        static func wav(seconds: Int, rate: Int = 8000) -> Data {
+            let samples = seconds * rate
+            var d = Data()
+            func u32(_ v: Int) { var x = UInt32(v).littleEndian; d.append(Data(bytes: &x, count: 4)) }
+            func u16(_ v: Int) { var x = UInt16(v).littleEndian; d.append(Data(bytes: &x, count: 2)) }
+            d.append("RIFF".data(using: .ascii)!); u32(36 + samples * 2)
+            d.append("WAVEfmt ".data(using: .ascii)!); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16)
+            d.append("data".data(using: .ascii)!); u32(samples * 2)
+            for i in 0..<samples { u16(Int(Double(i % 80) / 80 * 20000)) }
+            return d
+        }
+
+        @Test("AVURLAsset loads duration and tracks through the direct loader")
+        func assetLoads() async throws {
+            let file = Self.wav(seconds: 3)
+            let log = Box2()
+            MediaStreamConfiguration.directSizeProvider = { r, p in log.add("size \(r):\(p)"); return Int64(file.count) }
+            MediaStreamConfiguration.directRangeReader = { r, p, off, len in
+                log.add("read \(off)+\(len)")
+                return file.subdata(in: Int(off)..<Int(min(off + len, Int64(file.count))))
+            }
+            defer { MediaStreamConfiguration.directRangeReader = nil; MediaStreamConfiguration.directSizeProvider = nil }
+            let url = try #require(DirectStreamingURL.make(remote: "My Remote", path: "Music/tone.wav"))
+            let asset = AVURLAsset.makeForRCStream(url: url)
+            let duration = try await asset.load(.duration)
+            #expect(abs(CMTimeGetSeconds(duration) - 3.0) < 0.1)
+            let tracks = try await asset.loadTracks(withMediaType: .audio)
+            #expect(tracks.count == 1)
+            #expect(log.items.contains { $0.hasPrefix("size My Remote:Music/tone.wav") })
+            #expect(log.items.contains { $0.hasPrefix("read ") })
+        }
+
+        @Test("missing file fails the asset instead of hanging")
+        func missingFails() async throws {
+            MediaStreamConfiguration.directSizeProvider = { _, _ in nil }
+            MediaStreamConfiguration.directRangeReader = { _, _, _, _ in Data() }
+            defer { MediaStreamConfiguration.directRangeReader = nil; MediaStreamConfiguration.directSizeProvider = nil }
+            let url = try #require(DirectStreamingURL.make(remote: "R", path: "nope.mp3"))
+            let asset = AVURLAsset.makeForRCStream(url: url)
+            await #expect(throws: (any Error).self) { _ = try await asset.load(.duration) }
+        }
+
+        final class Box2: @unchecked Sendable {
+            let l = NSLock(); private var a: [String] = []
+            func add(_ s: String) { l.withLock { a.append(s) } }
+            var items: [String] { l.withLock { a } }
+        }
+    }
+
 }
