@@ -1584,7 +1584,6 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         // Load and update metadata
         let metadata = await mediaItem.getAudioMetadata()
-        let artwork = await mediaItem.loadImage()
 
         var title = metadata?.title
         if title == nil || title?.isEmpty == true {
@@ -1595,6 +1594,22 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
 
         // Wait briefly for duration to be available
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
+        // Publish the title/artist NOW and the artwork when it arrives: artwork can be slow to
+        // fetch (a remote file), and the lock screen used to keep showing the previous track
+        // until it finished — or forever if it never did.
+        await MainActor.run {
+            var mediaDuration: TimeInterval = 0
+            if let item = sharedAudioPlayer?.currentItem {
+                let dur = CMTimeGetSeconds(item.duration)
+                if dur.isFinite && dur > 0 { mediaDuration = dur; duration = mediaDuration }
+            }
+            updateNowPlayingForExternalPlayer(mediaItem: mediaItem, title: title, artist: metadata?.artist,
+                                              album: metadata?.album, artwork: nil, duration: mediaDuration, isVideo: false)
+        }
+        let artwork = await mediaItem.loadImage()
+        // The user may have skipped again while the artwork loaded; don't overwrite the newer track.
+        guard artwork != nil, isSameCurrentAudio(mediaItem) else { return }
 
         await MainActor.run {
             var mediaDuration: TimeInterval = 0
@@ -1616,6 +1631,12 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                 isVideo: false
             )
         }
+    }
+
+    /// True while `mediaItem` is still the track loaded in the shared audio player.
+    private func isSameCurrentAudio(_ mediaItem: any MediaItem) -> Bool {
+        guard let current = currentAudioMediaItem else { return false }
+        return isSameMediaContent(current, mediaItem)
     }
 
     /// Setup observers for the shared audio player (called once when player is created)
