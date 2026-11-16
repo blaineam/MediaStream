@@ -164,3 +164,33 @@ struct DirectStreamingHookTests {
     }
 
 }
+
+@Suite("Background playable", .serialized)
+struct BackgroundPlayableTests {
+    struct Audio: MediaItem {
+        let id = UUID(); let type: MediaType; var sourceURL: URL? { URL(string: "https://example.com/never-cached-\(id).mp3") }
+        init(_ t: MediaType) { type = t }
+        func loadImage() async -> PlatformImage? { nil }
+        func loadThumbnail(targetSize: CGFloat) async -> PlatformImage? { nil }
+        func loadVideoURL() async -> URL? { nil }
+        func loadAudioURL() async -> URL? { nil }
+        func getAnimatedImageDuration() async -> TimeInterval? { nil }
+        func getVideoDuration() async -> TimeInterval? { nil }
+        func getAudioDuration() async -> TimeInterval? { nil }
+        func getAudioMetadata() async -> AudioMetadata? { nil }
+        func getShareableItem() async -> Any? { nil }
+        func getCaption() async -> String? { nil }
+        func hasAudioTrack() async -> Bool { true }
+    }
+
+    @MainActor @Test("direct audio may play in the background; direct flag does not widen video")
+    func playable() {
+        let m = MediaDownloadManager.shared
+        MediaStreamConfiguration.directAudioStreaming = false
+        #expect(!m.isBackgroundPlayable(mediaItem: Audio(.audio)))
+        MediaStreamConfiguration.directAudioStreaming = true
+        defer { MediaStreamConfiguration.directAudioStreaming = false }
+        #expect(m.isBackgroundPlayable(mediaItem: Audio(.audio)))
+        #expect(!m.isBackgroundPlayable(mediaItem: Audio(.video)))
+    }
+}

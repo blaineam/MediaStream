@@ -723,7 +723,7 @@ public struct MediaGalleryView: View {
             // Map the service index (within cached items) to the full media items index
             let cachedItems = mediaItems.filter { item in
                 (item.type == .video || item.type == .audio) &&
-                MediaDownloadManager.shared.isCached(mediaItem: item)
+                MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: item)
             }
             guard newServiceIndex < cachedItems.count else { return }
             let cachedItem = cachedItems[newServiceIndex]
@@ -1089,7 +1089,7 @@ public struct MediaGalleryView: View {
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.shouldPauseForBackgroundNotification)) { _ in
             // Only continue background playback for cached media when background audio is enabled
             guard let currentItem = currentItem else { return }
-            guard !MediaDownloadManager.shared.isCached(mediaItem: currentItem) || !MediaStreamConfiguration.backgroundAudioEnabled else {
+            guard !MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: currentItem) || !MediaStreamConfiguration.backgroundAudioEnabled else {
                 return // Don't stop slideshow for cached media with background audio enabled
             }
 
@@ -1106,7 +1106,7 @@ public struct MediaGalleryView: View {
             // Map the cached items index to the full media items index
             let cachedItems = mediaItems.filter { item in
                 (item.type == .video || item.type == .audio) &&
-                MediaDownloadManager.shared.isCached(mediaItem: item)
+                MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: item)
             }
             guard cachedIndex < cachedItems.count else { return }
             let cachedItem = cachedItems[cachedIndex]
@@ -1667,7 +1667,7 @@ public struct MediaGalleryView: View {
 
         // Only enable background playback for cached items when background audio is enabled
         // Background audio is disabled when encryptDownloads is true
-        guard MediaDownloadManager.shared.isCached(mediaItem: currentItem) && MediaStreamConfiguration.backgroundAudioEnabled else {
+        guard MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: currentItem) && MediaStreamConfiguration.backgroundAudioEnabled else {
             playbackService.externalPlaybackMode = false
             return
         }
@@ -1675,7 +1675,7 @@ public struct MediaGalleryView: View {
         // Filter to only cached video/audio items
         let cachedItems = mediaItems.filter { item in
             (item.type == .video || item.type == .audio) &&
-            MediaDownloadManager.shared.isCached(mediaItem: item)
+            MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: item)
         }
 
         guard !cachedItems.isEmpty else {
@@ -1884,7 +1884,7 @@ public struct MediaGalleryView: View {
             // Find the index within the cached items playlist
             let cachedItems = mediaItems.filter { item in
                 (item.type == .video || item.type == .audio) &&
-                MediaDownloadManager.shared.isCached(mediaItem: item)
+                MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: item)
             }
             let currentItem = mediaItems[newIndex]
             if let cachedIndex = cachedItems.firstIndex(where: { $0.id == currentItem.id }) {

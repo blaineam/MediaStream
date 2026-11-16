@@ -160,6 +160,16 @@ public enum MediaStreamConfiguration {
         set { directLock.lock(); _directReader = newValue; directLock.unlock() }
     }
 
+    nonisolated(unsafe) private static var _directAudio = false
+
+    /// True when the host serves remote AUDIO through `espace-direct://` URLs. Such
+    /// audio needs no local server, so unlike other streamed media it may keep
+    /// playing in the background (see `MediaDownloadManager.isBackgroundPlayable`).
+    public static var directAudioStreaming: Bool {
+        get { directLock.lock(); defer { directLock.unlock() }; return _directAudio }
+        set { directLock.lock(); _directAudio = newValue; directLock.unlock() }
+    }
+
     /// Host hook for the size of an `espace-direct://` file.
     public static var directSizeProvider: DirectSizeProvider? {
         get { directLock.lock(); defer { directLock.unlock() }; return _directSize }

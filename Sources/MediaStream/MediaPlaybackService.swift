@@ -614,7 +614,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
                 // Pausing here would incorrectly pause cached media via externalPlayer
                 if !externalPlaybackMode {
                     // Pause non-cached media since rclone server will be killed
-                    let isCached = MediaDownloadManager.shared.isCached(mediaItem: currentMedia)
+                    let isCached = MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: currentMedia) && MediaStreamConfiguration.backgroundAudioEnabled
                     if !isCached && isPlaying {
                         print("[MediaPlaybackService] Pausing non-cached media for background")
                         pause()

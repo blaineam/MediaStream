@@ -622,6 +622,14 @@ public final class MediaDownloadManager: ObservableObject {
         }
     }
 
+    /// Whether this item may keep playing after the app is backgrounded: cached
+    /// locally, or audio streamed in-process (no localhost server to die).
+    /// Callers still check `MediaStreamConfiguration.backgroundAudioEnabled`.
+    public func isBackgroundPlayable(mediaItem: any MediaItem) -> Bool {
+        if isCached(mediaItem: mediaItem) { return true }
+        return mediaItem.type == .audio && MediaStreamConfiguration.directAudioStreaming
+    }
+
     /// Pulls an `espace-direct://` file to a temp file through the host's range reader.
     static func downloadDirect(_ url: URL, progressUpdate: (Int64, Int64) -> Void) async throws -> URL {
         guard let (remote, path) = DirectStreamingURL.parse(url),

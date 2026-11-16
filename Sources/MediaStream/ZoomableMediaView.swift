@@ -513,7 +513,7 @@ struct CustomVideoPlayerView: View {
                 self.isPlaying = nowPlaying
 
                 // Update external playback position for cached media (enables lock screen controls)
-                if MediaDownloadManager.shared.isCached(mediaItem: self.mediaItem) {
+                if MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: self.mediaItem) {
                     // Enable external playback mode so remote commands are relayed to views
                     if !MediaPlaybackService.shared.externalPlaybackMode {
                         MediaPlaybackService.shared.externalPlaybackMode = true
@@ -943,7 +943,7 @@ struct AudioPlayerControlsView: View {
                 self.isPlaying = nowPlaying
 
                 // Update external playback position for cached media (enables lock screen controls)
-                if MediaDownloadManager.shared.isCached(mediaItem: self.mediaItem) {
+                if MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: self.mediaItem) {
                     // Enable external playback mode so remote commands are relayed to views
                     if !MediaPlaybackService.shared.externalPlaybackMode {
                         MediaPlaybackService.shared.externalPlaybackMode = true
@@ -2226,7 +2226,7 @@ struct ZoomableMediaView: View {
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.shouldPauseForBackgroundNotification)) { _ in
             // Only continue background playback for cached, unencrypted media
-            let isCached = MediaDownloadManager.shared.isCached(mediaItem: mediaItem)
+            let isCached = MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: mediaItem)
             let backgroundEnabled = MediaStreamConfiguration.backgroundAudioEnabled
             let diskCacheKey = mediaItem.diskCacheKey
             print("[ZoomableMediaView] Background check - isCached: \(isCached), backgroundEnabled: \(backgroundEnabled), diskCacheKey: \(diskCacheKey ?? "nil")")
@@ -2254,7 +2254,7 @@ struct ZoomableMediaView: View {
             // Handle remote play command for cached media
             // Note: We check isCurrentSlide but also allow if this view's player is registered OR paused
             // This handles edge cases where isCurrentSlide might be stale in background
-            let isCached = MediaDownloadManager.shared.isCached(mediaItem: mediaItem)
+            let isCached = MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: mediaItem)
             let isRegisteredPlayer = (mediaItem.type == .audio && audioPlayer != nil && MediaPlaybackService.shared.externalPlayer === audioPlayer) ||
                                     (mediaItem.type == .video && videoPlayer != nil && MediaPlaybackService.shared.externalPlayer === videoPlayer)
             // Also consider this player if it exists and is paused (might be the one we want to resume)
@@ -2304,7 +2304,7 @@ struct ZoomableMediaView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: MediaPlaybackService.externalSeekNotification)) { notification in
             // Handle remote seek command for cached media
-            guard isCurrentSlide && MediaDownloadManager.shared.isCached(mediaItem: mediaItem) else { return }
+            guard isCurrentSlide && MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: mediaItem) else { return }
             guard let time = notification.userInfo?["time"] as? TimeInterval else { return }
             let cmTime = CMTime(seconds: time, preferredTimescale: 600)
             if mediaItem.type == .video {
