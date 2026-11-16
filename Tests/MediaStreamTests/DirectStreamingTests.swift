@@ -193,4 +193,21 @@ struct BackgroundPlayableTests {
         #expect(m.isBackgroundPlayable(mediaItem: Audio(.audio)))
         #expect(!m.isBackgroundPlayable(mediaItem: Audio(.video)))
     }
+
+    @MainActor @Test("encrypt-downloads no longer turns background audio off; streamed audio still plays in the background")
+    func encryptDownloadsDoesNotBlockStreamedAudio() {
+        let wasEncrypt = MediaStreamConfiguration.encryptDownloads
+        let wasBackground = MediaStreamConfiguration.backgroundAudioEnabled
+        defer {
+            MediaStreamConfiguration.encryptDownloads = wasEncrypt
+            MediaStreamConfiguration.backgroundAudioEnabled = wasBackground
+            MediaStreamConfiguration.directAudioStreaming = false
+        }
+        MediaStreamConfiguration.encryptDownloads = true
+        MediaStreamConfiguration.backgroundAudioEnabled = true
+        MediaStreamConfiguration.directAudioStreaming = true
+        #expect(MediaStreamConfiguration.backgroundAudioEnabled)
+        #expect(MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: Audio(.audio)))
+        #expect(!MediaDownloadManager.shared.isBackgroundPlayable(mediaItem: Audio(.video)))
+    }
 }

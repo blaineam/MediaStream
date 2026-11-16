@@ -626,7 +626,8 @@ public final class MediaDownloadManager: ObservableObject {
     /// locally, or audio streamed in-process (no localhost server to die).
     /// Callers still check `MediaStreamConfiguration.backgroundAudioEnabled`.
     public func isBackgroundPlayable(mediaItem: any MediaItem) -> Bool {
-        if isCached(mediaItem: mediaItem) { return true }
+        // A cached file encrypted at rest cannot be played by AVPlayer in the background.
+        if isCached(mediaItem: mediaItem) && !MediaStreamConfiguration.encryptDownloads { return true }
         return mediaItem.type == .audio && MediaStreamConfiguration.directAudioStreaming
     }
 

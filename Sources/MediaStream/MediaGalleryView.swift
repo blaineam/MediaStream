@@ -1595,6 +1595,7 @@ public struct MediaGalleryView: View {
                 item.type == .video
                     && MediaDownloadManager.shared.isCached(mediaItem: item)
                     && MediaStreamConfiguration.backgroundAudioEnabled
+                    && !MediaStreamConfiguration.encryptDownloads
             } ?? false
             if showPiP {
                 MediaStreamGlassButton(action: { playbackService.togglePiP(); resetControlsTimer() }) {

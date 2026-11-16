@@ -229,13 +229,18 @@ public enum MediaStreamConfiguration {
     private static var _backgroundAudioEnabled: Bool = true
 
     /// Whether background audio playback (mini player, lock screen controls)
-    /// is enabled. Effective value is `_backgroundAudioEnabled && !encryptDownloads`
-    /// — encrypted-at-rest cached files require the foreground decrypt
-    /// helper, so the lock-screen path can't reach them. The host app can
-    /// still set this freely; we override the getter to enforce the gate.
+    /// is enabled.
+    ///
+    /// This used to be forced off whenever `encryptDownloads` was on, because an
+    /// encrypted-at-rest CACHED file cannot be played by AVPlayer in the background.
+    /// That switched background audio off for everything — including audio streamed
+    /// in-process (`espace-direct://`), which is never written to disk. The encrypt
+    /// setting now only blocks playing the cached file itself
+    /// (`MediaDownloadManager.isBackgroundPlayable`, the cached-playback path), not
+    /// the audio session or streamed audio.
     @MainActor
     public static var backgroundAudioEnabled: Bool {
-        get { _backgroundAudioEnabled && !encryptDownloads }
+        get { _backgroundAudioEnabled }
         set { _backgroundAudioEnabled = newValue }
     }
 

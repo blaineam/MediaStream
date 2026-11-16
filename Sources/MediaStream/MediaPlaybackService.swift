@@ -1495,7 +1495,7 @@ public final class MediaPlaybackService: NSObject, ObservableObject {
         // When encryptDownloads is true, skip cached files (they're encrypted and can't be played directly)
         var audioURL: URL?
 
-        if MediaDownloadManager.shared.isCached(mediaItem: mediaItem) && MediaStreamConfiguration.backgroundAudioEnabled {
+        if MediaDownloadManager.shared.isCached(mediaItem: mediaItem) && MediaStreamConfiguration.backgroundAudioEnabled && !MediaStreamConfiguration.encryptDownloads {
             audioURL = MediaDownloadManager.shared.localURL(for: mediaItem)
             print("[MediaPlaybackService] Loading cached audio: \(audioURL?.lastPathComponent ?? "unknown")")
         } else if let sourceURL = mediaItem.sourceURL {
