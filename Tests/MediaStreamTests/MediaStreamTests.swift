@@ -860,7 +860,7 @@ struct ControlsVisibilityTests {
     /// SITE (`resetControlsTimer()` inside `handleIndexChanged`) that re-showed
     /// the chrome on every advance, so dismissing it just before the next slide
     /// looked like the tap had been ignored. No value test can see that.
-    @Test("Advancing a slide re-arms the idle timer but never raises the controls")
+    @Test("Advancing a slide neither raises the controls nor restarts their countdown")
     func indexChangeDoesNotRevealControls() throws {
         let source = try Self.galleryViewSource()
         guard let start = source.range(of: "private func handleIndexChanged(") else {
@@ -877,10 +877,30 @@ struct ControlsVisibilityTests {
             .joined(separator: "\n")
         #expect(!body.contains("resetControlsTimer()"), """
             handleIndexChanged must not call resetControlsTimer(), which SHOWS \
-            the controls. Use noteControlsActivity(), which only postpones the \
-            auto-hide when they are already visible.
+            the controls.
             """)
-        #expect(body.contains("noteControlsActivity()"))
+        #expect(!body.contains("scheduleHideControls()"), """
+            Restarting the auto-hide countdown on every slide means it never \
+            runs out when slides are shorter than it.
+            """)
+    }
+
+    /// Also structural: `toggleSlideshow(); resetControlsTimer()` hid the
+    /// controls and put them straight back over the starting slideshow.
+    @Test("Starting a slideshow from the play button or space bar leaves the controls hidden")
+    func startingASlideshowDoesNotReRaiseTheControls() throws {
+        let source = try Self.galleryViewSource()
+        let code = source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.hasPrefix("//") }
+        for (index, line) in code.enumerated() where line.contains("toggleSlideshow()") {
+            #expect(!line.contains("resetControlsTimer()"), "\(line)")
+            if index + 1 < code.count {
+                #expect(code[index + 1] != "resetControlsTimer()", "after: \(line)")
+            }
+        }
+        #expect(source.contains("if !isSlideshowPlaying {\n            resetControlsTimer()"))
     }
 }
 
