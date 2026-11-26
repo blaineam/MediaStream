@@ -1164,8 +1164,7 @@ public struct MediaGalleryView: View {
         }
         #if os(iOS)
         .onKeyPress(.space) {
-            toggleSlideshow()
-            resetControlsTimer()
+            toggleSlideshowFromControl()
             return .handled
         }
         .onKeyPress(.leftArrow) {
@@ -1220,8 +1219,7 @@ public struct MediaGalleryView: View {
                 resetControlsTimer()
                 return nil
             case 49: // space — play/pause the slideshow
-                toggleSlideshow()
-                resetControlsTimer()
+                toggleSlideshowFromControl()
                 return nil
             default:
                 return event
@@ -1533,7 +1531,7 @@ public struct MediaGalleryView: View {
             }
 
             // Slideshow Play/Pause button with duration context menu
-            MediaStreamGlassButton(action: { toggleSlideshow(); resetControlsTimer() }, size: 44) {
+            MediaStreamGlassButton(action: { toggleSlideshowFromControl() }, size: 44) {
                 Image(systemName: isSlideshowPlaying ? "stop.fill" : "play.square.fill")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -1872,12 +1870,10 @@ public struct MediaGalleryView: View {
         anchorKey = currentItem.map { Self.identityKey(for: $0) } ?? anchorKey
         checkAndHandleVideo()
         loadCaption()
-        // Re-arm the idle timer, but DO NOT bring the controls back: the user
-        // dismissed them to watch the content, and a slide change is not their
-        // interaction. (This was `resetControlsTimer()`, which re-showed the
-        // chrome on every advance — so dismissing it right before the next
-        // slide looked like it had ignored the tap.)
-        noteControlsActivity()
+        // A slide change is not the user's interaction: it neither brings the
+        // controls back nor restarts their auto-hide countdown. Restarting it
+        // here meant that with slides shorter than the countdown, controls that
+        // were up when a slideshow was running never went away.
 
         // Sync current index to the playback service (for background controls)
         if playbackService.externalPlaybackMode, mediaItems.indices.contains(newIndex) {
@@ -1957,6 +1953,17 @@ public struct MediaGalleryView: View {
             stopSlideshow()
         } else {
             startSlideshow()
+        }
+    }
+
+    /// The play button and the space bar. Starting hides the controls and must
+    /// leave them hidden (`resetControlsTimer()` after the toggle put them
+    /// straight back over the slideshow); stopping brings them up. A start that
+    /// didn't take (zoomed in) counts as stopped, so the controls stay reachable.
+    private func toggleSlideshowFromControl() {
+        toggleSlideshow()
+        if !isSlideshowPlaying {
+            resetControlsTimer()
         }
     }
 
@@ -2372,14 +2379,6 @@ public struct MediaGalleryView: View {
                 showControls = true
             }
         }
-        scheduleHideControls()
-    }
-
-    /// Something happened that should POSTPONE the auto-hide without ever
-    /// summoning the chrome: the slideshow advanced, a download started. If the
-    /// controls are already hidden they stay hidden.
-    private func noteControlsActivity() {
-        guard showControls else { return }
         scheduleHideControls()
     }
 

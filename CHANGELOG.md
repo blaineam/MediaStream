@@ -6,6 +6,7 @@ All notable changes to MediaStream are documented here. This project adheres to 
 
 ### Fixed
 
+- Gallery controls no longer stay on screen through a slideshow. Starting it with the play button or space bar leaves them hidden (the button re-showed them right after the start hid them), and a slide change no longer restarts their auto-hide countdown, which with slides shorter than 10 s meant it never ran out.
 - Opening a gallery of hundreds of large remote videos no longer re-fetches each video's `moov` atom several times. Thumbnail and duration probes share one learned duration per URL and concurrent duration requests join a single probe, instead of each opening its own `AVURLAsset` and cancelling after multi-MB reads.
 - `MediaDownloadButton` computes its cache state in one pass instead of two full scans (each item hit `diskCacheKey` and a file stat) on every render, which stalled the main thread in large galleries.
 
