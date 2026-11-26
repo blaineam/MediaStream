@@ -4,6 +4,8 @@ All notable changes to MediaStream are documented here. This project adheres to 
 
 ## [Unreleased]
 
+## [2.23.2] - 2026-11-26
+
 ### Fixed
 
 - Gallery controls no longer stay on screen through a slideshow. Starting it with the play button or space bar leaves them hidden (the button re-showed them right after the start hid them), and a slide change no longer restarts their auto-hide countdown, which with slides shorter than 10 s meant it never ran out.
